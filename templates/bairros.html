@@ -1,0 +1,514 @@
+{% extends "base.html" %}
+{% block titulo %}Mapa Restrito de Franca — Prevenção Dengue{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>
+  .mapa-3d-frame {
+    position: relative;
+    width: 100%;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 2px solid var(--border-color);
+    box-shadow: 0 12px 30px -5px rgba(0, 0, 0, 0.25);
+    background: #0f172a;
+  }
+
+  .mapa-leaflet-3d {
+    height: 600px;
+    width: 100%;
+    background: #0f172a;
+  }
+
+  .pino-3d-wrap {
+    position: relative;
+    width: 26px;
+    height: 26px;
+  }
+
+  .esfera-3d {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    position: absolute;
+    top: 0;
+    left: 2px;
+    box-shadow: inset -4px -4px 7px rgba(0, 0, 0, 0.7), 2px 5px 10px rgba(0, 0, 0, 0.5);
+    border: 1.5px solid rgba(255, 255, 255, 0.95);
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    cursor: pointer;
+  }
+
+  .esfera-3d:hover {
+    transform: scale(1.45) translateY(-4px);
+    z-index: 9999;
+  }
+
+  .sombra-3d {
+    position: absolute;
+    bottom: -3px;
+    left: 3px;
+    width: 20px;
+    height: 6px;
+    background: rgba(0, 0, 0, 0.45);
+    border-radius: 50%;
+    filter: blur(2px);
+  }
+
+  .esfera-vermelho { background: radial-gradient(circle at 7px 7px, #ff8787, #e11d48, #6b0d23); }
+  .esfera-amarelo  { background: radial-gradient(circle at 7px 7px, #ffec99, #d97706, #78350f); }
+  .esfera-verde    { background: radial-gradient(circle at 7px 7px, #8ce99a, #16a34a, #064e3b); }
+  .esfera-cinza    { background: radial-gradient(circle at 7px 7px, #f1f5f9, #64748b, #0f172a); }
+
+  .esfera-pulsante::after {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 2px solid #ff4d6d;
+    animation: pulso3d 1.4s infinite ease-out;
+  }
+
+  @keyframes pulso3d {
+    0% { transform: scale(0.6); opacity: 1; }
+    100% { transform: scale(1.9); opacity: 0; }
+  }
+
+  .rotulo-bairro-3d {
+    background: rgba(15, 23, 42, 0.9) !important;
+    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 11px !important;
+    padding: 3px 8px !important;
+    border-radius: 4px !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4) !important;
+  }
+  .rotulo-bairro-3d::before { display: none !important; }
+
+  .leaflet-popup-content-wrapper {
+    border-radius: 12px !important;
+    padding: 4px !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.25) !important;
+    border: 1px solid #e2e8f0 !important;
+  }
+  
+  .leaflet-popup-content {
+    margin: 12px 14px !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  }
+
+  .popup-bairro {
+    min-width: 230px;
+  }
+
+  .popup-bairro strong.popup-titulo {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #0f172a;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 0.5rem;
+    display: block;
+    margin-bottom: 0.75rem;
+  }
+
+  .popup-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .popup-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f8fafc;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #f1f5f9;
+    font-size: 0.82rem;
+  }
+
+  .popup-item span { color: #64748b; font-weight: 500; }
+  .popup-item strong { color: #0f172a; font-weight: 600; }
+
+  .leaflet-popup-content a,
+  .popup-acoes a {
+    display: block !important;
+    width: 100% !important;
+    text-align: center !important;
+    padding: 0.6rem 0.8rem !important;
+    background: #2563eb !important;
+    color: #ffffff !important;
+    text-decoration: none !important;
+    border-radius: 8px !important;
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    box-shadow: 0 3px 8px rgba(37, 99, 235, 0.3) !important;
+    transition: background 0.2s, transform 0.1s !important;
+  }
+
+  .leaflet-popup-content a:hover,
+  .popup-acoes a:hover {
+    background: #1d4ed8 !important;
+    color: #ffffff !important;
+    transform: translateY(-1px) !important;
+  }
+</style>
+{% endblock %}
+
+{% block conteudo %}
+<section class="hero hero-menor">
+  <div>
+    <span class="eyebrow">TERRITÓRIO MUNICIPAL • FRANCA/SP</span>
+    <h1>Mapa Exclusivo de Franca/SP</h1>
+    <p class="subtitulo">Exibição geográfica limitada estritamente ao perímetro do município de Franca com camada de Heatmap.</p>
+  </div>
+  <a href="{{ url_for('previsao') }}" class="botao botao-primario">Gerar previsões</a>
+</section>
+
+<section class="painel">
+  <div class="mapa-filtro">
+    <label>Localizar bairro em Franca
+      <select id="seletorBairro">
+        <option value="">Selecione um bairro...</option>
+        {% for b in bairros %}<option value="{{ b.id }}">{{ b.nome }}</option>{% endfor %}
+      </select>
+    </label>
+    <div class="acoes">
+      <button class="botao" id="btnVisaoSat" type="button">🛰️ Satélite HD</button>
+      <button class="botao" id="btnVisaoVetor" type="button">🗺️ Mapa Urbano</button>
+      <button class="botao" id="btnVisaoHeat" type="button">🔥 Mapa de Calor</button>
+      <button class="botao botao-primario" id="centralizarMapa" type="button">🎯 Visão Geral</button>
+    </div>
+  </div>
+</section>
+
+<section class="painel mapa-real-painel">
+  <div class="painel-cabecalho">
+    <div>
+      <h2>Município de Franca/SP</h2>
+      <small>Navegação restrita aos limites da cidade.</small>
+    </div>
+  </div>
+  
+  <div class="mapa-3d-frame">
+    <div id="mapaBairros" class="mapa-leaflet-3d"></div>
+  </div>
+  
+  <div class="mapa-resumo">
+    <div><span>Bairros Mapeados</span><strong>{{ total_bairros }}</strong></div>
+    <div><span>Com Análise de Risco</span><strong>{{ bairros|selectattr('pontuacao','ne','none')|list|length }}</strong></div>
+    <div><span>Perímetro</span><strong>Franca / SP — Brasil</strong></div>
+  </div>
+  
+  <div class="mapa-status">
+    <span><i class="bolinha verde"></i> Baixo Risco</span>
+    <span><i class="bolinha amarelo"></i> Médio Risco</span>
+    <span><i class="bolinha vermelho"></i> Alto Risco</span>
+    <span><i class="bolinha cinza"></i> Sem dados</span>
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Indicadores por Bairro</h2><small>Monitoramento individualizado em Franca.</small></div>
+  </div>
+  <div class="tabela-scroll">
+    <table class="tabela">
+      <thead>
+        <tr><th>Bairro/Área</th><th>População</th><th>Casos</th><th>Incid./1.000</th><th>Risco</th><th>Previsão</th><th>Ação</th></tr>
+      </thead>
+      <tbody>
+        {% for b in bairros %}
+        <tr>
+          <td><strong>{{ b.nome }}</strong></td>
+          <td>{{ b.populacao or '—' }}</td>
+          <td>{{ b.total_casos }}</td>
+          <td>{{ b.incidencia_1000 if b.incidencia_1000 is not none else '—' }}</td>
+          <td>{% if b.pontuacao is not none %}<span class="selo selo-{{ b.cor }}">{{ '%.1f'|format(b.pontuacao) }} • {{ b.classificacao }}</span>{% else %}—{% endif %}</td>
+          <td>{{ '%.1f'|format(b.previsao_casos) if b.previsao_casos is not none else '—' }}</td>
+          <td><a class="link-destaque" href="{{ url_for('detalhe_bairro',bairro_id=b.id) }}">Abrir →</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js" crossorigin=""></script>
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  const el = document.getElementById('mapaBairros');
+  if (!el || typeof L === 'undefined') return;
+
+  const limitesFranca = L.latLngBounds(
+    [-20.6400, -47.4800],
+    [-20.4500, -47.3100]
+  );
+
+  const centroFranca = [-20.5386, -47.4008];
+
+  const m = L.map('mapaBairros', {
+    center: centroFranca,
+    zoom: 13,
+    minZoom: 12,
+    maxZoom: 18,
+    maxBounds: limitesFranca,
+    maxBoundsViscosity: 1.0,
+    zoomControl: true
+  });
+
+  const camadaSatelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    bounds: limitesFranca,
+    attribution: 'Esri Satellite — Exclusivo Franca/SP'
+  });
+
+  const camadaRotulos = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    subdomains: 'abcd',
+    bounds: limitesFranca
+  });
+
+  const camadaVetor = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    bounds: limitesFranca,
+    attribution: '&copy; OpenStreetMap Franca'
+  });
+
+  camadaSatelite.addTo(m);
+  camadaRotulos.addTo(m);
+
+  const COORDENADAS_FRANCA = {
+    'Centro': [-20.5386, -47.4008],
+    'Cidade Nova': [-20.5350, -47.4120],
+    'Estação': [-20.5320, -47.4080],
+    'São Joaquim': [-20.5430, -47.4200],
+    'Jardim Dermínio': [-20.5510, -47.4260],
+    'Jardim Aeroporto': [-20.5650, -47.3850],
+    'Parque Vicente Leporace': [-20.5080, -47.4120],
+    'Jardim Brasilândia': [-20.5300, -47.3750],
+    'Jardim Ângela Rosa': [-20.5250, -47.3800],
+    'Parque das Esmeraldas': [-20.5550, -47.4300],
+    'Vila Santa Cruz': [-20.5500, -47.4150],
+    'Jardim Vera Cruz': [-20.5150, -47.3950],
+    'Jardim Portinari': [-20.4980, -47.3850],
+    'Recanto Elimar': [-20.5600, -47.3980],
+    'Vila Rezende': [-20.5480, -47.4050],
+    'Bairro Higienópolis': [-20.5420, -47.3920],
+    'Jardim Paulistano': [-20.5400, -47.3700],
+    'Parque Progresso': [-20.5520, -47.3850],
+    'Vila Chico Júlio': [-20.5260, -47.4100],
+    'Jardim Piratininga': [-20.5350, -47.3880],
+    'Vila Aparecida': [-20.5300, -47.3920],
+    'Vila São Sebastião': [-20.5420, -47.4150],
+    'Jardim Planalto': [-20.5220, -47.3810],
+    'Jardim Dr. Antonio Petraglia': [-20.5460, -47.3790],
+    'Jardim Integração': [-20.5510, -47.3810],
+    'Parque Franville': [-20.5540, -47.3820],
+    'Jardim Noêmia': [-20.5440, -47.3850],
+    'Jardim Seminário': [-20.5310, -47.3950],
+    'Miramontes': [-20.4950, -47.4050],
+    'Jardim Palma': [-20.5150, -47.3720],
+    'Jardim Alvorada': [-20.5220, -47.4080],
+    'Vila Imperador': [-20.5260, -47.4080],
+    'Jardim Guanabara': [-20.5290, -47.3810],
+    'Vila Hípica': [-20.5500, -47.3980],
+    'Jardim Paraty': [-20.5560, -47.3750],
+    'Parque Universitário': [-20.5580, -47.3720],
+    'Vila Industrial': [-20.5700, -47.4100],
+    'Vila Raycos': [-20.5390, -47.4150],
+    'Jardim Panorama': [-20.5280, -47.3880],
+    'Jardim América': [-20.5360, -47.4090],
+    'Jardim Palestina': [-20.5280, -47.4180],
+    'Residencial Zanetti': [-20.5200, -47.3650],
+    'Jardim Brasil': [-20.5310, -47.4220],
+    'Jardim Luiza': [-20.5050, -47.4020],
+    'Jardim Santa Lúcia': [-20.5480, -47.3980]
+  };
+
+  const grupo = L.layerGroup().addTo(m);
+  const dados = {{ mapa|tojson }};
+  const refs = {};
+  const heatPoints = [];
+
+  dados.forEach(function(b) {
+    // 1. Prioridade total para as coordenadas salvas no banco de dados
+    let coords = null;
+    if (b.latitude != null && b.longitude != null) {
+      let lat = Number(b.latitude);
+      let lon = Number(b.longitude);
+      if (lat >= -20.64 && lat <= -20.45 && lon >= -47.48 && lon <= -47.31) {
+        coords = [lat, lon];
+      }
+    }
+
+    // 2. Se não houver coordenada salva no banco, usa o padrão inicial
+    if (!coords) {
+      coords = COORDENADAS_FRANCA[b.nome];
+    }
+    if (!coords) return;
+
+    let heatObj = null;
+    if (b.pontuacao != null) {
+      let intens = Math.max(0.15, Number(b.pontuacao) / 100);
+      heatObj = [coords[0], coords[1], intens];
+      heatPoints.push(heatObj);
+    }
+
+    let classeCor = 'esfera-cinza';
+    if (b.cor === 'vermelho') classeCor = 'esfera-vermelho';
+    if (b.cor === 'amarelo') classeCor = 'esfera-amarelo';
+    if (b.cor === 'verde') classeCor = 'esfera-verde';
+
+    let classePulsar = '';
+    if (b.cor === 'vermelho' && b.probabilidade_aumento != null && b.probabilidade_aumento > 60.0) {
+      classePulsar = 'esfera-pulsante';
+    }
+
+    const icone3D = L.divIcon({
+      className: 'pino-3d-custom',
+      html: '<div class="pino-3d-wrap">' +
+              '<div class="sombra-3d"></div>' +
+              '<div class="esfera-3d ' + classeCor + ' ' + classePulsar + '"></div>' +
+            '</div>',
+      iconSize: [26, 26],
+      iconAnchor: [13, 11]
+    });
+
+    const mk = L.marker(coords, { icon: icone3D, draggable: true });
+
+    // Evento em tempo real: o mapa de calor acompanha o arrasto da esfera 3D
+    mk.on('drag', function(ev) {
+      const pos = ev.target.getLatLng();
+      if (heatObj) {
+        heatObj[0] = pos.lat;
+        heatObj[1] = pos.lng;
+        if (camadaHeat) {
+          camadaHeat.setLatLngs(heatPoints);
+        }
+      }
+    });
+
+    // Evento ao soltar o mouse: grava a nova posição permanentemente no banco.db
+    mk.on('dragend', async function(ev) {
+      const pos = ev.target.getLatLng();
+      try {
+        await fetch('/api/bairro/' + b.id + '/coordenadas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude: pos.lat, longitude: pos.lng })
+        });
+      } catch (err) {
+        console.error("Erro ao salvar no banco:", err);
+      }
+    });
+
+    const risco = b.pontuacao == null ? 'Sem análise' : Number(b.pontuacao).toFixed(1) + ' pts • ' + b.classificacao;
+    const incidencia = b.incidencia_1000 == null ? '—' : Number(b.incidencia_1000).toFixed(2);
+    const prev = b.previsao_casos == null ? '—' : Number(b.previsao_casos).toFixed(1);
+
+    mk.bindPopup(
+      '<div class="popup-bairro">' +
+        '<strong class="popup-titulo">📍 ' + b.nome + '</strong>' +
+        '<div class="popup-grid">' +
+          '<div class="popup-item"><span>Risco</span><strong>' + risco + '</strong></div>' +
+          '<div class="popup-item"><span>Casos Acumulados</span><strong>' + b.total_casos + '</strong></div>' +
+          '<div class="popup-item"><span>População</span><strong>' + (b.populacao || '—') + '</strong></div>' +
+          '<div class="popup-item"><span>Incidência/1.000</span><strong>' + incidencia + '</strong></div>' +
+          '<div class="popup-item"><span>Previsão Próx. Período</span><strong>' + prev + '</strong></div>' +
+        '</div>' +
+        '<div class="popup-acoes">' +
+          '<a href="/bairro/' + b.id + '">Ver detalhes do bairro →</a>' +
+        '</div>' +
+      '</div>'
+    ).bindTooltip(b.nome, {
+      direction: 'top',
+      permanent: false,
+      className: 'rotulo-bairro-3d'
+    });
+
+    grupo.addLayer(mk);
+    refs[String(b.id)] = { mk: mk, coords: coords };
+  });
+
+  let camadaHeat = null;
+  if (typeof L.heatLayer === 'function' && heatPoints.length > 0) {
+    camadaHeat = L.heatLayer(heatPoints, {
+      radius: 40,
+      blur: 22,
+      maxZoom: 16,
+      // GRADIENTE VERMELHO COMPLETO (Rosa suave -> Vermelho médio -> Vermelho vivo -> Vinho escuro)
+      gradient: {
+        0.0: '#ffe4e6',
+        0.3: '#f43f5e',
+        0.6: '#e11d48',
+        1.0: '#881337'
+      }
+    });
+  }
+
+  m.fitBounds(limitesFranca, { padding: [20, 20] });
+
+  document.getElementById('btnVisaoSat').addEventListener('click', function() {
+    if (camadaHeat && m.hasLayer(camadaHeat)) m.removeLayer(camadaHeat);
+    if (!m.hasLayer(grupo)) grupo.addTo(m);
+    if (!m.hasLayer(camadaSatelite)) {
+      m.removeLayer(camadaVetor);
+      camadaSatelite.addTo(m);
+      camadaRotulos.addTo(m);
+    }
+  });
+
+  document.getElementById('btnVisaoVetor').addEventListener('click', function() {
+    if (camadaHeat && m.hasLayer(camadaHeat)) m.removeLayer(camadaHeat);
+    if (!m.hasLayer(grupo)) grupo.addTo(m);
+    if (!m.hasLayer(camadaVetor)) {
+      m.removeLayer(camadaSatelite);
+      m.removeLayer(camadaRotulos);
+      camadaVetor.addTo(m);
+    }
+  });
+
+  const btnHeat = document.getElementById('btnVisaoHeat');
+  if (btnHeat) {
+    btnHeat.addEventListener('click', function() {
+      if (!m.hasLayer(grupo)) grupo.addTo(m);
+      if (camadaHeat && !m.hasLayer(camadaHeat)) {
+        camadaHeat.addTo(m);
+      }
+    });
+  }
+
+  const seletor = document.getElementById('seletorBairro');
+  if (seletor) {
+    seletor.addEventListener('change', function(e) {
+      const r = refs[e.target.value];
+      if (!r) return;
+      if (!m.hasLayer(grupo)) {
+        if (camadaHeat && m.hasLayer(camadaHeat)) m.removeLayer(camadaHeat);
+        grupo.addTo(m);
+      }
+      m.setView(r.coords, 16, { animate: true });
+      setTimeout(function() { r.mk.openPopup(); }, 250);
+    });
+  }
+
+  const btnCent = document.getElementById('centralizarMapa');
+  if (btnCent) {
+    btnCent.addEventListener('click', function() {
+      m.fitBounds(limitesFranca, { padding: [20, 20] });
+    });
+  }
+
+  setTimeout(function() { m.invalidateSize(); }, 200);
+});
+</script>
+{% endblock %}

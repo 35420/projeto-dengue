@@ -1,0 +1,21 @@
+TERRITORIO DE FRANCA/SP — FONTE OFICIAL
+======================================
+
+A base territorial deste projeto foi alinhada ao Mapa de Bairros disponibilizado pela Prefeitura de Franca/SP.
+
+Fonte oficial:
+https://www3.franca.sp.gov.br/pdf/20260526170421_6a15fcc5d84ee_MAPA_Bairros_Esc_16.000.pdf
+
+Página oficial de mapas:
+https://www.franca.sp.gov.br/prefeitura/mapas-cidade
+
+Regras importantes do projeto:
+- Os nomes territoriais cadastrados vêm do mapa oficial.
+- O sistema não cria automaticamente bairros fora dessa lista.
+- População e coordenadas são preenchidas somente quando uma fonte identificada (IBGE) encontrar correspondência.
+- Casos de dengue por bairro são preenchidos somente quando o SINAN encontrar uma correspondência territorial.
+- O InfoDengue continua sendo tratado como dado municipal e não como dado de bairro.
+- Não existem mais registros sintéticos no banco entregue nesta versão.
+
+Observação:
+O mapa oficial inclui bairros, vilas, residenciais, prolongamentos, conjuntos habitacionais e outras denominações territoriais. Por isso a lista possui mais entradas do que uma lista informal de bairros.

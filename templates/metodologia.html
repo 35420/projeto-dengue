@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block titulo %}Metodologia — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero hero-menor">
+  <div><span class="eyebrow">FUNDAMENTAÇÃO CIENTÍFICA</span><h1>Como o projeto funciona</h1><p class="subtitulo">A arquitetura foi pensada para ligar dados epidemiológicos, variáveis ambientais, Machine Learning e interface de suporte à decisão.</p></div>
+</section>
+
+<section class="grid-3">
+  <div class="painel"><span class="tag tag-azul">01 • Dados</span><h2>Coleta e organização</h2><p>O sistema mantém duas camadas: dados externos municipais e registros locais por bairro. O CSV permite incorporar séries estruturadas sem digitar tudo manualmente.</p></div>
+  <div class="painel"><span class="tag tag-roxo">02 • Modelo</span><h2>Previsão temporal</h2><p>A Random Forest usa casos de períodos anteriores, média móvel, chuva, temperatura e focos para estimar o próximo período quando existe histórico suficiente.</p></div>
+  <div class="painel"><span class="tag tag-verde">03 • Decisão</span><h2>Prioridade</h2><p>O dashboard combina risco atual, tendência, previsão e recomendações automáticas para apoiar a priorização de ações preventivas.</p></div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Por que essas variáveis?</h2><small>Fundamentação para a seleção inicial das features.</small></div></div>
+  <div class="texto-cientifico">
+    <p><strong>Temperatura e precipitação:</strong> estudos de revisão e meta-análises encontraram associação entre variáveis meteorológicas e risco/incidência de dengue, embora o efeito varie por região e haja defasagens temporais.</p>
+    <p><strong>Aedes aegypti:</strong> a dengue é transmitida principalmente por mosquitos Aedes, e fatores ambientais influenciam a reprodução, sobrevivência e capacidade de transmissão do vetor.</p>
+    <p><strong>Temperatura e transmissão:</strong> uma revisão experimental recente resume evidências de que mudanças de temperatura podem alterar infecção, disseminação e transmissão de arbovírus em Aedes, reforçando a utilidade da variável como hipótese preditiva — sem significar uma relação determinística.</p>
+  </div>
+</section>
+
+<section class="grid-2">
+  <div class="painel"><h2>Risco atual</h2><p>É um indicador acadêmico de 0 a 100. Os pesos atuais são: casos 35%, focos 30%, chuva 20% e temperatura 15%. Essa fórmula não representa um protocolo oficial de vigilância.</p><div class="barra-composicao"><i style="width:35%"></i><i style="width:30%"></i><i style="width:20%"></i><i style="width:15%"></i></div><p class="nota">A combinação é transparente de propósito: pode ser explicada facilmente na apresentação.</p></div>
+  <div class="painel"><h2>Previsão</h2><p>Quando há histórico suficiente, o modelo aprende a prever o próximo registro por bairro. O conjunto é separado temporalmente: períodos anteriores no treino e períodos posteriores no teste.</p><p>O intervalo mostrado é uma faixa aproximada baseada nos quantis das árvores do Random Forest; não é um intervalo clínico ou oficial.</p></div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Limitações assumidas</h2><small>Parte importante de uma pesquisa aplicada.</small></div></div>
+  <ul class="lista-check">
+    <li>Dados iniciais de bairro são sintéticos/demonstração e devem ser substituídos por dados municipais quando disponíveis.</li>
+    <li>Dados epidemiológicos externos são municipais; isso não significa que cada bairro tenha o mesmo comportamento.</li>
+    <li>Variáveis climáticas têm relação temporal e espacial complexa; correlação não implica causalidade.</li>
+    <li>O modelo precisa de mais dados e validação externa antes de ser considerado para uso operacional.</li>
+  </ul>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Fontes</h2><small>Links para consulta e conferência durante a apresentação.</small></div></div>
+  <ul class="fontes-lista">
+    <li><a href="https://info.dengue.mat.br/" target="_blank" rel="noopener">InfoDengue / Fiocruz</a></li>
+    <li><a href="https://www.who.int/en/news-room/fact-sheets/detail/dengue-and-severe-dengue" target="_blank" rel="noopener">Organização Mundial da Saúde — Dengue</a></li>
+    <li><a href="https://pubmed.ncbi.nlm.nih.gov/32810500/" target="_blank" rel="noopener">Li et al. (2020) — temperatura e precipitação</a></li>
+    <li><a href="https://pubmed.ncbi.nlm.nih.gov/36561711/" target="_blank" rel="noopener">Revisão sobre dengue e clima</a></li>
+    <li><a href="https://pubmed.ncbi.nlm.nih.gov/37719233/" target="_blank" rel="noopener">Revisão sobre temperatura e transmissão por Aedes</a></li>
+  </ul>
+</section>
+{% endblock %}

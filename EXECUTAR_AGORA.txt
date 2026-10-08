@@ -1,0 +1,31 @@
+Se usar o VS Code:
+1. Abra a pasta interna que contém app.py (projeto_dengue).
+2. No terminal, execute: python app.py
+3. Abra: http://127.0.0.1:5000
+
+Pelo Windows:
+- Execute INICIAR.bat.
+- O arquivo verifica as dependências com pip show (sem importar scikit-learn antes do servidor) e mantém o CMD aberto se houver erro.
+
+Se o projeto estiver dentro de outra pasta com o mesmo nome, isso não é problema; o importante é executar o terminal dentro da pasta que contém app.py.
+
+
+COLETA AUTOMATICA POR BAIRRO
+- SINAN/Dengue: tenta obter casos por bairro diretamente dos microdados publicos quando o campo de bairro estiver presente.
+- IBGE Censo 2022: sincroniza populacao e centroides da camada de bairros.
+- Focos do mosquito: permanecem separados dos casos e sao automaticos apenas quando houver um feed estruturado de vigilancia vetorial; caso contrario, manual/CSV.
+- O primeiro sincronismo do SINAN pode demorar porque os arquivos nacionais sao grandes; as consultas seguintes usam cache por 24 horas.
+
+
+ATUALIZAÇÃO IMPORTANTE DO TERRITÓRIO
+-------------------------------------
+Esta versão foi alinhada ao Mapa de Bairros da Prefeitura de Franca/SP.
+O banco entregue já contém a nova base territorial e não contém os registros sintéticos da versão anterior.
+
+Os dados automáticos seguem estas regras:
+- IBGE: atualiza população/coordenadas somente para nomes reconhecidos na base oficial.
+- SINAN: atualiza casos por bairro somente quando houver correspondência com a base oficial.
+- InfoDengue: continua municipal, não é tratado como caso por bairro.
+- O sistema não cria bairros aleatórios a partir de nomes externos.
+
+Fonte territorial: FONTES_TERRITORIO.txt

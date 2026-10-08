@@ -1,0 +1,25 @@
+# Ambiente virtual e pacotes
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+
+# Segredos e variáveis locais
+.env
+.secret_key
+
+# SQLite (arquivos auxiliares; o banco.db pode ir no repositório)
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Sistema e editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

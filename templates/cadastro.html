@@ -1,0 +1,260 @@
+{% extends "base.html" %}
+{% block titulo %}Dados — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero hero-menor">
+  <div>
+    <span class="eyebrow">BANCO DE DADOS</span>
+    <h1>Entrada, edição e importação</h1>
+    <p class="subtitulo">O sistema tenta preencher automaticamente os dados disponíveis. O que não existe em fonte pública estruturada por bairro aparece para preenchimento manual ou por CSV.</p>
+  </div>
+</section>
+
+<section class="painel destaque-auto">
+  <div class="painel-cabecalho">
+    <div>
+      <h2>Coleta automática de dados</h2>
+      <small>Executa as fontes disponíveis e preserva os dados anteriores quando uma fonte estiver fora do ar.</small>
+    </div>
+    <form action="{{ url_for('atualizar_automaticos') }}" method="post">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="botao botao-primario" type="submit">↻ Atualizar tudo</button>
+    </form>
+  </div>
+  <div class="auto-grid">
+    <div><span>Casos municipais</span><strong>InfoDengue / Fiocruz</strong><small class="texto-suave">Automático</small></div>
+    <div><span>Chuva / temperatura</span><strong>Open-Meteo / reanálise meteorológica</strong><small class="texto-suave">Automático</small></div>
+    <div><span>Casos por bairro</span><strong>SINAN/Dengue</strong><small class="texto-suave">Automático quando o arquivo público contém bairro de residência; sem distribuição estimada.</small></div>
+    <div><span>Focos por bairro</span><strong>Fonte vetorial / manual</strong><small class="texto-suave">Automático somente quando existir feed estruturado de vigilância; caso contrário, manual/CSV.</small></div>
+    <div><span>População do bairro</span><strong>IBGE Censo 2022</strong><small class="texto-suave">Sincronizada automaticamente com a camada de bairros.</small></div>
+  </div>
+  <p class="nota">O sistema tenta extrair casos por bairro diretamente dos microdados públicos do SINAN/Dengue, usando município e bairro de residência quando esses campos estão presentes. O InfoDengue continua sendo usado para os indicadores municipais e informa que sua divisão submunicipal na API está atualmente implementada apenas no Rio de Janeiro. <a href="https://info.dengue.mat.br/services/api" target="_blank" rel="noopener">Ver documentação do InfoDengue</a>.</p>
+</section>
+
+<!-- FORMULÁRIOS MELHORADOS E ALINHADOS -->
+<section class="grid-2" style="align-items: stretch;">
+  <!-- NOVO BAIRRO -->
+  <div class="painel" style="display: flex; flex-direction: column; justify-content: space-between;">
+    <div>
+      <div class="painel-cabecalho">
+        <div>
+          <h2>Novo Bairro</h2>
+          <small>Cadastre áreas e populações de Franca.</small>
+        </div>
+        <span class="tag tag-azul">Bairro</span>
+      </div>
+      <form id="formNovoBairro" action="{{ url_for('adicionar_bairro') }}" method="post" class="formulario" style="display: flex; flex-direction: column; gap: 1rem;">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <label>Nome do Bairro
+          <input name="nome" maxlength="80" required placeholder="Ex.: Jardim Aeroporto">
+        </label>
+        <label>População <span class="campo-opcional">(opcional)</span>
+          <input name="populacao" type="number" min="0" placeholder="Ex.: 15000">
+          <small class="texto-suave">Se o bairro já existir na camada automática, o IBGE terá prioridade.</small>
+        </label>
+      </form>
+    </div>
+    <div style="margin-top: 1.5rem;">
+      <button form="formNovoBairro" class="botao botao-primario" type="submit" style="width: 100%;">+ Cadastrar Bairro</button>
+    </div>
+  </div>
+
+  <!-- NOVO REGISTRO HISTÓRICO -->
+  <div class="painel">
+    <div class="painel-cabecalho">
+      <div>
+        <h2>Novo Registro Histórico</h2>
+        <small>Um registro único por bairro e período.</small>
+      </div>
+      <span class="tag tag-roxo">Mensal</span>
+    </div>
+    <form action="{{ url_for('adicionar_dado') }}" method="post" class="formulario" style="display: flex; flex-direction: column; gap: 1rem;">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <label>Bairro
+          <select name="bairro_id" required>
+            <option value="">Selecione...</option>
+            {% for b in bairros %}
+              <option value="{{ b.id }}">{{ b.nome }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Período (YYYY-MM)
+          <input id="periodoNovoDado" name="periodo" required maxlength="30" placeholder="2026-09">
+        </label>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <label>Casos de Dengue
+          <input name="casos_dengue" type="number" min="0" required placeholder="0">
+        </label>
+        <label>Focos do Mosquito
+          <input name="focos_mosquito" type="number" min="0" required placeholder="0">
+        </label>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <label>Chuva (mm)
+          <input id="chuvaNovoDado" name="chuva_mm" type="number" min="0" step="0.1" placeholder="Ex.: 85.0">
+        </label>
+        <label>Temp. Média (°C)
+          <input id="tempNovoDado" name="temperatura_media" type="number" min="-20" max="60" step="0.1" placeholder="Ex.: 25.5">
+        </label>
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap;">
+        <button class="botao" type="button" onclick="preencherClimaNovoDado()" style="flex: 1; white-space: nowrap;">☁ Clima Automático</button>
+        <button class="botao botao-primario" type="submit" style="flex: 1; white-space: nowrap;">+ Adicionar Registro</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Importar CSV</h2><small>Colunas obrigatórias: bairro, periodo, casos, chuva_mm, temperatura_media, focos. Até 5.000 linhas.</small></div>
+    <span class="tag tag-azul">Ciência de dados</span>
+  </div>
+  <form action="{{ url_for('importar_csv') }}" method="post" enctype="multipart/form-data" class="formulario formulario-linha">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Arquivo CSV<input name="arquivo" type="file" accept=".csv,text/csv" required></label>
+    <button class="botao botao-primario" type="submit">Importar e validar</button>
+  </form>
+  <p class="nota">A importação atualiza o registro quando bairro + período já existem. Linhas inválidas são ignoradas e registradas no histórico de importações.</p>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Clima coletado automaticamente</h2><small>Agregado mensalmente para Franca. Pode ser usado como variável ambiental compartilhada por todos os bairros, sem fingir medição específica por bairro.</small></div>
+    <a class="link-destaque" href="{{ url_for('fontes') }}">Ver fontes →</a>
+  </div>
+  <div class="tabela-scroll">
+    <table class="tabela tabela-compacta">
+      <thead><tr><th>Período</th><th>Chuva</th><th>Temp. média</th><th>Temp. mín.</th><th>Temp. máx.</th><th>Horas chuva</th><th>Vento máx.</th><th>Umidade</th><th>Sol</th><th>Fonte</th></tr></thead>
+      <tbody>
+        {% for c in clima %}<tr><td>{{ c.periodo }}</td><td>{{ '%.1f'|format(c.chuva_mm) }} mm</td><td>{{ '%.1f'|format(c.temperatura_media) if c.temperatura_media is not none else '—' }} °C</td><td>{{ '%.1f'|format(c.temperatura_min) if c.temperatura_min is not none else '—' }} °C</td><td>{{ '%.1f'|format(c.temperatura_max) if c.temperatura_max is not none else '—' }} °C</td><td>{{ '%.1f'|format(c.horas_precipitacao) }}</td><td>{{ '%.1f'|format(c.vento_max_kmh) if c.vento_max_kmh is not none else '—' }} km/h</td><td>{{ '%.1f'|format(c.umidade_media) if c.umidade_media is not none else '—' }}%</td><td>{{ '%.1f'|format(c.horas_sol) }} h</td><td><span class="tag tag-azul">automático</span></td></tr>
+        {% else %}<tr><td colspan="10" class="vazio">Nenhum dado climático automático ainda. Clique em “Atualizar tudo”.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Bairros cadastrados</h2><small>Edite os campos e salve na mesma linha.</small></div></div>
+  <div class="tabela-scroll">
+    <table class="tabela">
+      <thead><tr><th>Nome</th><th>População</th><th>Origem da população</th><th>Ações</th></tr></thead>
+      <tbody>
+        {% for b in bairros %}
+          <tr>
+            <td><input form="bairro-{{ b.id }}" name="nome" value="{{ b.nome }}" maxlength="80" required></td>
+            <td><input form="bairro-{{ b.id }}" name="populacao" type="number" min="0" value="{{ b.populacao or '' }}"></td>
+            <td><span class="tag tag-{{ 'verde' if b.populacao_origem and b.populacao_origem.startswith('automatico') else 'neutro' }}">{{ b.populacao_origem or 'manual' }}</span></td>
+            <td class="acoes">
+              <form id="bairro-{{ b.id }}" action="{{ url_for('editar_bairro',bairro_id=b.id) }}" method="post"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="botao botao-pequeno" type="submit">Salvar</button></form>
+              <form action="{{ url_for('excluir_bairro',bairro_id=b.id) }}" method="post" onsubmit="return confirm('Excluir bairro, histórico e previsões vinculados?');"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="botao botao-pequeno botao-perigo" type="submit">Excluir</button></form>
+            </td>
+          </tr>
+        {% else %}<tr><td colspan="4" class="vazio">Nenhum bairro.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- SEÇÃO DE REGISTROS HISTÓRICOS AGRUPADOS POR MÊS COM ROLAGEM VERTICAL -->
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div>
+      <h2>Registros históricos por Mês</h2>
+      <small>{{ dados|length }} registro(s) agrupados por período. Clique no mês para expandir/recolher.</small>
+    </div>
+  </div>
+
+  {% for grupo in dados|groupby('periodo')|reverse %}
+    <details class="bloco-mes" style="margin-bottom: 0.75rem; border: 1px solid var(--border-color); border-radius: 8px; background: #ffffff; overflow: hidden;" {% if loop.first %}open{% endif %}>
+      <summary style="padding: 0.85rem 1.2rem; font-weight: 700; font-size: 0.95rem; cursor: pointer; background: #f8fafc; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; user-select: none;">
+        <span>📅 Mês / Período: {{ grupo.grouper }}</span>
+        <span class="tag tag-azul">{{ grupo.list|length }} bairros cadastrados</span>
+      </summary>
+      
+      <!-- BARRA DE ROLAGEM VERTICAL APLICADA (max-height: 420px) -->
+      <div class="tabela-scroll" style="max-height: 420px; overflow-y: auto; border: none; border-radius: 0;">
+        <table class="tabela tabela-dados">
+          <thead style="position: sticky; top: 0; z-index: 10;">
+            <tr>
+              <th>Bairro</th>
+              <th>Período</th>
+              <th>Casos</th>
+              <th>Chuva (mm)</th>
+              <th>Temp. (°C)</th>
+              <th>Focos</th>
+              <th>Origem casos</th>
+              <th>Origem focos</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in grupo.list %}
+              <tr>
+                <td><strong>{{ d.bairro_nome }}</strong></td>
+                <td><input form="dado-{{ d.id }}" name="periodo" value="{{ d.periodo }}" maxlength="30" required style="width: 100px;"></td>
+                <td><input form="dado-{{ d.id }}" name="casos_dengue" type="number" min="0" value="{{ d.casos_dengue }}" style="width: 80px;"></td>
+                <td><input form="dado-{{ d.id }}" name="chuva_mm" type="number" min="0" step="0.1" value="{{ d.chuva_mm }}" style="width: 80px;"></td>
+                <td><input form="dado-{{ d.id }}" name="temperatura_media" type="number" min="-20" max="60" step="0.1" value="{{ d.temperatura_media }}" style="width: 80px;"></td>
+                <td><input form="dado-{{ d.id }}" name="focos_mosquito" type="number" min="0" value="{{ d.focos_mosquito }}" style="width: 80px;"></td>
+                <td><span class="tag tag-{{ 'verde' if d.casos_origem and d.casos_origem.startswith('automatico') else 'neutro' }}">{{ d.casos_origem or d.origem }}</span></td>
+                <td><span class="tag tag-{{ 'verde' if d.focos_origem and d.focos_origem.startswith('automatico') else 'laranja' if d.focos_origem in ['manual','importado'] else 'neutro' }}">{{ status_origem_foco(d.focos_origem) }}</span></td>
+                <td class="acoes">
+                  <form id="dado-{{ d.id }}" action="{{ url_for('editar_dado',dado_id=d.id) }}" method="post"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="botao botao-pequeno" type="submit">Salvar</button></form>
+                  <form action="{{ url_for('excluir_dado',dado_id=d.id) }}" method="post" onsubmit="return confirm('Excluir este registro?');"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="botao botao-pequeno botao-perigo" type="submit">Excluir</button></form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  {% else %}
+    <p class="vazio">Nenhum registro histórico cadastrado.</p>
+  {% endfor %}
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Últimas importações</h2><small>Controle da carga de dados.</small></div></div>
+  <div class="tabela-scroll">
+    <table class="tabela tabela-compacta">
+      <thead><tr><th>Arquivo</th><th>Status</th><th>Registros</th><th>Mensagem</th><th>Data</th></tr></thead>
+      <tbody>
+        {% for item in imports %}<tr><td>{{ item.arquivo }}</td><td>{{ item.status }}</td><td>{{ item.registros }}</td><td>{{ item.mensagem }}</td><td>{{ item.executado_em }}</td></tr>
+        {% else %}<tr><td colspan="5" class="vazio">Nenhuma importação.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.addEventListener("DOMContentLoaded", function(){
+  const p=document.getElementById("periodoNovoDado");
+  if(p && !p.value){ const d=new Date(); p.value=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
+});
+async function preencherClimaNovoDado(){
+  const p=document.getElementById("periodoNovoDado");
+  const chuva=document.getElementById("chuvaNovoDado");
+  const temp=document.getElementById("tempNovoDado");
+  if(!p || !/^\d{4}-\d{2}$/.test(p.value)){ alert("Informe o período no formato YYYY-MM."); return; }
+  try{
+    const r=await fetch("{{ url_for('api_clima') }}?periodo="+encodeURIComponent(p.value));
+    const data=await r.json();
+    if(!r.ok || !data.ok) throw new Error(data.mensagem||"Não foi possível obter o clima.");
+    if(data.dados.chuva_mm!=null) chuva.value=Number(data.dados.chuva_mm).toFixed(1);
+    if(data.dados.temperatura_media!=null) temp.value=Number(data.dados.temperatura_media).toFixed(1);
+    alert("Clima preenchido automaticamente. Casos e focos continuam sendo informados manualmente quando a fonte por bairro não existe.");
+  }catch(e){ alert(e.message); }
+}
+</script>
+{% endblock %}

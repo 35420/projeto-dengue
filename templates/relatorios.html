@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block titulo %}Relatórios — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero hero-menor">
+  <div>
+    <span class="eyebrow">RELATÓRIOS</span>
+    <h1>Exportação e auditoria dos dados</h1>
+    <p class="subtitulo">Arquivos CSV podem ser abertos no Excel e usados na apresentação, análise ou documentação do trabalho.</p>
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Exportar</h2><small>Os arquivos usam UTF-8.</small></div>
+  </div>
+  <div class="botoes-exportar">
+    {% for tipo, rotulo in [('resumo','Resumo dos bairros'),('oficial','Dados epidemiológicos externos'),('dados','Histórico local'),('previsoes','Previsões / IA'),('bairros','Cadastro de bairros')] %}
+      <a href="{{ url_for('exportar_csv',tipo=tipo) }}" class="botao {{ 'botao-primario' if loop.first else '' }}">↓ {{ rotulo }}</a>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Resumo por bairro</h2><small>Indicadores calculados a partir dos registros locais.</small></div>
+  </div>
+  <div class="tabela-scroll">
+    <table class="tabela tabela-compacta">
+      <thead>
+        <tr><th>Bairro</th><th>População</th><th>Casos</th><th>Incidência</th><th>Risco</th><th>Previsão</th><th>Tendência</th></tr>
+      </thead>
+      <tbody>
+        {% for b in resumo %}
+        <tr>
+          <td>{{ b.nome }}</td>
+          <td>{{ b.populacao or '—' }}</td>
+          <td>{{ b.total_casos }}</td>
+          <td>{{ b.incidencia_1000 if b.incidencia_1000 is not none else '—' }}</td>
+          <td>{% if b.pontuacao is not none %}<span class="selo selo-{{ b.cor }}">{{ '%.1f'|format(b.pontuacao) }} • {{ b.classificacao }}</span>{% else %}—{% endif %}</td>
+          <td>{{ '%.1f'|format(b.previsao_casos) if b.previsao_casos is not none else '—' }}</td>
+          <td>{{ b.tendencia.texto }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="vazio">Sem dados.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="grid-2">
+  <div class="painel">
+    <div class="painel-cabecalho">
+      <div><h2>Histórico de previsões</h2><small>Últimos resultados gerados.</small></div>
+    </div>
+    <div class="tabela-scroll">
+      <table class="tabela tabela-compacta">
+        <thead>
+          <tr><th>Bairro</th><th>Risco</th><th>Previsão</th><th>Prob. aumento</th><th>MAE teste</th></tr>
+        </thead>
+        <tbody>
+          {% for p in previsoes[:30] %}
+          <tr>
+            <td>{{ p.bairro_nome }}</td>
+            <td>{{ '%.1f'|format(p.pontuacao_risco) if p.pontuacao_risco is not none else '—' }}</td>
+            <td>{{ '%.1f'|format(p.previsao_casos) if p.previsao_casos is not none else '—' }}</td>
+            <td>{{ '%.1f'|format(p.probabilidade_aumento*100) ~ '%' if p.probabilidade_aumento is not none else '—' }}</td>
+            <td>{{ '%.2f'|format(p.mae_teste) if p.mae_teste is not none else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="vazio">Sem previsões.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="painel">
+    <div class="painel-cabecalho">
+      <div><h2>Atualizações de fontes</h2><small>Registro de sucesso e falha da consulta automática.</small></div>
+    </div>
+    <div class="tabela-scroll">
+      <table class="tabela tabela-compacta">
+        <thead>
+          <tr><th>Fonte</th><th>Status</th><th>Registros</th><th>Data</th></tr>
+        </thead>
+        <tbody>
+          {% for a in atualizacoes %}
+          <tr>
+            <td>{{ a.fonte }}</td>
+            <td>{{ a.status }}</td>
+            <td>{{ a.registros }}</td>
+            <td>{{ a.executado_em }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="vazio">Nenhuma atualização.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div><h2>Série epidemiológica externa</h2><small>InfoDengue / Fiocruz — escala municipal, separada da base por bairro.</small></div>
+  </div>
+  <div class="tabela-scroll">
+    <table class="tabela tabela-compacta">
+      <thead>
+        <tr><th>Semana</th><th>Casos</th><th>Acumulados</th><th>Incidência/100 mil</th><th>Alerta</th><th>Rt</th></tr>
+      </thead>
+      <tbody>
+        {% for d in oficial[:24] %}
+        <tr>
+          <td>{{ d.semana_epidemiologica or '—' }}</td>
+          <td>{{ d.casos_semana }}</td>
+          <td>{{ d.casos_acumulados }}</td>
+          <td>{{ '%.2f'|format(d.incidencia_100k or 0) }}</td>
+          <td>{{ {1:'Verde',2:'Amarelo',3:'Laranja',4:'Vermelho'}.get(d.nivel_alerta,'—') }}</td>
+          <td>{{ '%.2f'|format(d.rt) if d.rt is not none else '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="vazio">Ainda não há dados externos armazenados.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

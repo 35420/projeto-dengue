@@ -1,0 +1,261 @@
+=====================================================================
+ PREVENÇÃO DENGUE — FRANCA/SP
+ Projeto acadêmico de P&D+I — Ciência de Dados + Machine Learning
+=====================================================================
+
+1. VISÃO DO PROJETO
+---------------------------------------------------------------------
+O sistema foi estruturado como um modelo acadêmico de suporte à decisão
+para prevenção de dengue. Ele conecta:
+
+- dados históricos por bairro;
+- indicadores epidemiológicos municipais;
+- variáveis ambientais;
+- análise de risco;
+- Machine Learning para previsão de curto prazo;
+- dashboard e mapa espacial esquemático;
+- relatórios e importação de CSV.
+
+O objetivo é demonstrar a integração entre IA, dados, banco, software,
+UX e fundamentação científica.
+
+2. O QUE FOI IMPLEMENTADO
+---------------------------------------------------------------------
+DASHBOARD
+- Indicadores de bairros, registros, casos e níveis de risco.
+- Incidência por 1.000 habitantes.
+- Filtro por bairro.
+- Gráficos locais sem biblioteca JavaScript externa.
+- Histórico municipal obtido automaticamente quando a fonte está
+  disponível.
+
+MAPA / BAIRROS
+- Mapa espacial esquemático com bairros coloridos por risco.
+- Ordenação por risco, previsão, incidência ou casos.
+- Página individual do bairro.
+- Comparação de indicadores.
+
+MACHINE LEARNING
+- Random Forest para previsão de casos do próximo período.
+- Variáveis: casos anteriores, média móvel, chuva, temperatura e focos.
+- Separação temporal entre treino e teste.
+- MAE, RMSE e R² de teste.
+- Intervalo aproximado pelas árvores da floresta.
+- Probabilidade estimada de aumento em relação ao último período.
+- Fallback para risco didático quando o histórico é insuficiente.
+
+SUPORTE À DECISÃO
+- Classificação Baixo / Médio / Alto.
+- Recomendações automáticas relacionadas aos indicadores.
+- Simulador de risco que não altera o banco.
+
+DADOS
+- SQLite.
+- CRUD de bairros e registros históricos.
+- Importação CSV com validação.
+- Origem do registro: demonstração, manual ou importado.
+- Histórico de importações.
+
+AUTOMAÇÃO
+- Consulta automática da série municipal do InfoDengue / Fiocruz.
+- Cache de 6 horas.
+- Botão de atualização manual.
+- Falha de internet não apaga o último dado salvo.
+- Dados externos ficam em tabela separada.
+
+SEGURANÇA E ROBUSTEZ
+- SQL parametrizado.
+- Validação de entradas.
+- Limite de upload de 2 MB.
+- CSRF para operações POST.
+- Tratamento de erros HTTP 400/404/413/500.
+- Debug desligado por padrão; use DENGUE_DEBUG=1 apenas durante
+  desenvolvimento.
+- Chave de sessão gerada localmente (.secret_key) ou via DENGUE_SECRET_KEY.
+
+3. DADOS DE DEMONSTRAÇÃO
+---------------------------------------------------------------------
+A base inicial contém registros sintéticos por bairro, identificados
+pela coluna "origem" como "demonstração".
+
+Isso é intencional para que o projeto funcione sem exigir uma base
+municipal completa no primeiro uso.
+
+Esses números NÃO devem ser apresentados como dados reais de bairros.
+
+O indicador municipal de referência informado anteriormente também é
+mantido separado da base local. A fonte externa automática é tratada
+como dado epidemiológico municipal e não como dado oficial de bairro.
+
+4. MACHINE LEARNING — O QUE ELE REALMENTE FAZ
+---------------------------------------------------------------------
+A versão atual evoluiu de uma Random Forest que apenas reproduzia uma
+pontuação para uma previsão temporal acadêmica.
+
+Para cada bairro, são criadas amostras onde o alvo é o número de casos
+do próximo período.
+
+Features usadas:
+- casos do período anterior;
+- casos de dois períodos atrás;
+- média dos últimos períodos;
+- chuva;
+- temperatura média;
+- focos do mosquito.
+
+A divisão de treino e teste respeita a ordem temporal, evitando usar
+um período futuro para treinar a avaliação de um período anterior.
+
+Quando o banco tem histórico suficiente, a tela "IA Preditiva" mostra:
+- previsão de casos;
+- intervalo aproximado;
+- probabilidade estimada de aumento;
+- MAE de treino;
+- MAE de teste;
+- RMSE;
+- R² de teste.
+
+Isso é uma avaliação acadêmica, não uma validação epidemiológica
+externa.
+
+5. RISCO ATUAL
+---------------------------------------------------------------------
+O risco atual continua sendo um indicador DIDÁTICO e transparente de
+0 a 100.
+
+Pesos:
+- Casos atuais: 35%
+- Focos: 30%
+- Chuva: 20%
+- Temperatura: 15%
+
+Classificação:
+- 0 a 39,9: Baixo
+- 40 a 69,9: Médio
+- 70 a 100: Alto
+
+Essa fórmula não é protocolo oficial de vigilância epidemiológica.
+
+6. FONTE EXTERNA
+---------------------------------------------------------------------
+A consulta automática utiliza a API pública do InfoDengue / Fiocruz.
+
+As semanas mais recentes podem ser preliminares e sofrer revisões.
+A consulta automática é apenas uma camada de dados externos do projeto.
+
+Fonte:
+https://info.dengue.mat.br/
+
+7. FUNDAMENTAÇÃO CIENTÍFICA
+---------------------------------------------------------------------
+A tela "Metodologia" apresenta a justificativa inicial para as variáveis
+ambientais e traz links de consulta.
+
+Referências utilizadas como apoio:
+- WHO — Dengue:
+  https://www.who.int/en/news-room/fact-sheets/detail/dengue-and-severe-dengue
+- Li et al. (2020) — temperatura e precipitação:
+  https://pubmed.ncbi.nlm.nih.gov/32810500/
+- Revisão sobre dengue e clima:
+  https://pubmed.ncbi.nlm.nih.gov/36561711/
+- Revisão experimental sobre temperatura e Aedes:
+  https://pubmed.ncbi.nlm.nih.gov/37719233/
+
+8. COMO EXECUTAR
+---------------------------------------------------------------------
+No terminal, dentro desta pasta:
+
+    python -m pip install -r requirements.txt
+    python app.py
+
+Depois abra:
+
+    http://127.0.0.1:5000
+
+No Windows, também é possível usar:
+
+    INICIAR.bat
+
+O arquivo .bat verifica se as principais bibliotecas estão instaladas
+e instala as dependências caso seja necessário.
+
+9. IMPORTAÇÃO CSV
+---------------------------------------------------------------------
+Cabeçalho obrigatório:
+
+bairro,periodo,casos,chuva_mm,temperatura_media,focos
+
+Exemplo:
+
+bairro,periodo,casos,chuva_mm,temperatura_media,focos
+Centro,2026-09,12,85,24.8,7
+Cidade Nova,2026-09,25,112,26.2,14
+
+O bairro precisa existir previamente no cadastro.
+
+10. ESTRUTURA
+---------------------------------------------------------------------
+projeto_dengue/
+├── app.py
+├── bairros_oficiais.py
+├── banco.db
+├── requirements.txt
+├── INICIAR.bat
+├── LEIA-ME.txt
+├── .gitignore
+├── templates/
+│   ├── base.html
+│   ├── index.html
+│   ├── bairros.html
+│   ├── bairro_detalhe.html
+│   ├── cadastro.html
+│   ├── previsao.html
+│   ├── relatorios.html
+│   ├── metodologia.html
+│   ├── assistente.html
+│   ├── fontes.html
+│   └── erro.html
+└── static/
+    ├── style.css
+    └── script.js
+
+Para publicar no GitHub, não envie a pasta venv/ nem o arquivo .secret_key.
+O .gitignore já ignora esses itens. A chave OpenAI, se usada, deve ir
+apenas em variável de ambiente (OPENAI_API_KEY), nunca no código.
+
+11. LIMITAÇÕES IMPORTANTES
+---------------------------------------------------------------------
+- O mapa é esquemático; não representa polígonos oficiais dos bairros.
+- Os dados iniciais por bairro são sintéticos.
+- A fonte epidemiológica externa está em escala municipal.
+- O modelo precisa de séries reais, mais extensas e validação externa
+  antes de qualquer uso operacional.
+- "Probabilidade de aumento" é uma estimativa interna do conjunto de
+  árvores e não representa probabilidade clínica oficial.
+
+=====================================================================
+
+AUTOMAÇÃO DE DADOS
+- InfoDengue / Fiocruz: casos municipais de dengue, casos estimados, incidência, nível de alerta, Rt e probabilidade de Rt>1.
+- Open-Meteo: chuva, temperatura média/mínima/máxima, horas de precipitação, vento máximo e horas de sol, agregados por mês para Franca.
+- Casos por bairro: o sistema NÃO distribui casos municipais artificialmente. Quando não houver fonte estruturada por bairro, o campo fica para cadastro manual ou CSV.
+- Focos por bairro: manual/CSV quando disponível em registros locais de vigilância.
+- População por bairro: manual/CSV; o IBGE fornece estimativas municipais e não usamos rateio inventado para criar população de bairro.
+- Botão “Atualizar tudo” consulta as fontes automáticas e preserva o último dado salvo em caso de falha.
+- Na página “Fontes automáticas” é possível acompanhar o status de cada coletor.
+
+FONTES PRINCIPAIS
+- InfoDengue: https://info.dengue.mat.br/services/api
+- Open-Meteo Historical Weather API: https://open-meteo.com/en/docs/historical-weather-api
+- IBGE — Estimativas de População: https://www.ibge.gov.br/estatisticas/sociais/populacao/9103-estimativas-de-populacao.html
+- Prefeitura de Franca — ações e boletins publicados sobre dengue: https://www.franca.sp.gov.br/
+
+
+COLETA AUTOMATICA POR BAIRRO
+- SINAN/Dengue: tenta obter casos por bairro diretamente dos microdados publicos quando o campo de bairro estiver presente.
+- IBGE Censo 2022: sincroniza populacao e centroides da camada de bairros.
+- Focos do mosquito: permanecem separados dos casos e sao automaticos apenas quando houver um feed estruturado de vigilancia vetorial; caso contrario, manual/CSV.
+- O primeiro sincronismo do SINAN pode demorar porque os arquivos nacionais sao grandes; as consultas seguintes usam cache por 24 horas.
+
+
+MAPA: a tela Mapa/Bairros agora usa Leaflet + OpenStreetMap, com agrupamento de marcadores e links individuais para o Google Maps. Os marcadores aparecem quando latitude/longitude forem sincronizadas pela camada territorial do IBGE.

@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block titulo %}Assistente IA — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero">
+  <div>
+    <span class="eyebrow">ASSISTENTE INTELIGENTE • FRANCA/SP</span>
+    <h1>Pergunte diretamente ao sistema</h1>
+    <p class="subtitulo">A IA consulta os dados disponíveis no site para responder sobre clima, risco, tendência e prevenção.</p>
+  </div>
+</section>
+
+<section class="assistente-layout">
+  <div class="painel assistente-chat">
+    <div class="painel-cabecalho">
+      <div><h2>Conversa</h2><small>Escreva uma pergunta natural.</small></div>
+      <span class="tag tag-roxo">IA + dados do site</span>
+    </div>
+    <div id="chatMensagens" class="chat-mensagens" aria-live="polite">
+      <div class="chat-msg bot"><strong>Assistente</strong><span>Olá! Posso consultar a chuva por bairro, indicar quais bairros estão com maior risco/tendência e explicar os principais cuidados para prevenção.</span></div>
+    </div>
+    <form id="formAssistente" class="chat-form">
+      <label>Bairro (opcional)
+        <select id="bairroAssistente"><option value="">Detectar pela pergunta</option>{% for b in bairros %}<option value="{{ b.id }}">{{ b.nome }}</option>{% endfor %}</select>
+      </label>
+      <div class="chat-linha">
+        <input id="perguntaAssistente" maxlength="1200" placeholder="Ex.: qual a probabilidade de chuva no Jardim Brasil?" autocomplete="off" required>
+        <button class="botao botao-primario" type="submit">Perguntar</button>
+      </div>
+    </form>
+  </div>
+
+  <aside class="painel assistente-ajuda">
+    <div class="painel-cabecalho"><div><h2>O que perguntar</h2><small>Alguns exemplos.</small></div></div>
+    <button class="pergunta-exemplo" type="button" data-q="Qual a probabilidade de chuva no bairro selecionado?">🌧️ Probabilidade de chuva</button>
+    <button class="pergunta-exemplo" type="button" data-q="Qual bairro tem maior tendência de casos de dengue?">📊 Bairro com maior tendência</button>
+    <button class="pergunta-exemplo" type="button" data-q="Qual é o risco do bairro selecionado?">⚠️ Risco do bairro</button>
+    <button class="pergunta-exemplo" type="button" data-q="Quais cuidados devo ter em casa para evitar o mosquito?">🏠 Cuidados para a casa</button>
+    <div class="aviso-caixa"><strong>Importante:</strong> a previsão de chuva vem do serviço meteorológico e o risco de dengue é um indicador do projeto. Eles não são garantia de ocorrência de chuva nem previsão epidemiológica oficial.</div>
+  </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  const form = document.getElementById('formAssistente');
+  const input = document.getElementById('perguntaAssistente');
+  const bairro = document.getElementById('bairroAssistente');
+  const chat = document.getElementById('chatMensagens');
+  
+  const add = (who, text, meta) => {
+    const div = document.createElement('div');
+    div.className = 'chat-msg ' + (who === 'Você' ? 'user' : 'bot');
+    div.innerHTML = '<strong>' + who + '</strong><span>' + String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') + '</span>' + (meta ? '<small>' + meta + '</small>' : '');
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+  };
+  
+  document.querySelectorAll('.pergunta-exemplo').forEach(btn => {
+    btn.addEventListener('click', () => {
+      input.value = btn.dataset.q;
+      input.focus();
+    });
+  });
+  
+  if (form) {
+    form.addEventListener('submit', async e => {
+      e.preventDefault(); 
+      const q = input.value.trim(); 
+      if (!q) return;
+
+      add('Você', q); 
+      input.value = '';
+      add('Assistente', 'Consultando os dados do site...'); 
+      const loading = chat.lastElementChild;
+
+      try {
+        const r = await fetch('{{ url_for("api_assistente") }}', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pergunta: q, bairro_id: bairro.value || null })
+        });
+
+        const data = await r.json();
+        if (loading) loading.remove();
+
+        if (!r.ok || !data.ok) {
+          add('Assistente', data.mensagem || 'Não foi possível obter resposta no momento.');
+          return;
+        }
+
+        add('Assistente', data.resposta, data.fonte || 'dados do site');
+      } catch (err) {
+        if (loading) loading.remove();
+        add('Assistente', 'Ocorreu um erro ao comunicar com o servidor.');
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

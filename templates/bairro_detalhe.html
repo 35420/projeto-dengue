@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block titulo %}{{ bairro.nome }} — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero hero-menor">
+  <div><span class="eyebrow">ANÁLISE INDIVIDUAL</span><h1>{{ bairro.nome }}</h1><p class="subtitulo">Histórico, tendência, incidência e estimativa de curto prazo.</p></div>
+  <a href="{{ url_for('bairros_page') }}" class="botao botao-secundario">← Voltar aos bairros</a>
+</section>
+
+<section class="cartoes cartoes-6">
+  <div class="cartao acento-azul"><span class="cartao-numero">{{ bairro.populacao or '—' }}</span><span class="cartao-label">População</span></div>
+  <div class="cartao acento-laranja"><span class="cartao-numero">{{ total_casos }}</span><span class="cartao-label">Casos acumulados</span></div>
+  <div class="cartao acento-roxo"><span class="cartao-numero">{{ incidencia if incidencia is not none else '—' }}</span><span class="cartao-label">Casos/1.000</span></div>
+  <div class="cartao acento-amarelo"><span class="cartao-numero">{{ total_focos }}</span><span class="cartao-label">Focos acumulados</span></div>
+  <div class="cartao acento-verde"><span class="cartao-numero">{{ tendencia.texto }}</span><span class="cartao-label">Tendência</span></div>
+  <div class="cartao acento-vermelho"><span class="cartao-numero">{{ previsao.pontuacao_risco if previsao else '—' }}</span><span class="cartao-label">Risco atual</span></div>
+</section>
+
+<section class="grid-2">
+  <div class="painel"><div class="painel-cabecalho"><div><h2>Evolução</h2><small>Casos e focos registrados no banco.</small></div></div><div class="grafico-wrap alto"><canvas id="graficoBairro"></canvas></div></div>
+  <div class="painel">
+    <div class="painel-cabecalho"><div><h2>Leitura executiva</h2><small>Resumo dos últimos dados.</small></div>{% if previsao %}<span class="selo selo-{{ 'vermelho' if previsao.classificacao=='Alto' else ('amarelo' if previsao.classificacao=='Médio' else 'verde') }}">{{ previsao.classificacao }}</span>{% endif %}</div>
+    {% if previsao %}
+      <div class="resultado-mini"><strong>{{ previsao.pontuacao_risco }}</strong><span>pontos</span></div>
+      <div class="metricas-resultado">
+        <div><span>Próx. período</span><strong>{{ '%.1f'|format(previsao.previsao_casos) if previsao.previsao_casos is not none else '—' }}</strong></div>
+        <div><span>Intervalo</span><strong>{% if previsao.limite_inferior is not none %}{{ '%.1f'|format(previsao.limite_inferior) }}–{{ '%.1f'|format(previsao.limite_superior) }}{% else %}—{% endif %}</strong></div>
+        <div><span>Prob. aumento</span><strong>{{ '%.1f'|format(previsao.probabilidade_aumento*100) ~ '%' if previsao.probabilidade_aumento is not none else '—' }}</strong></div>
+      </div>
+      <p class="nota">{{ previsao.observacao }}</p>
+      <a class="botao botao-primario" href="{{ url_for('previsao',bairro=bairro.id) }}">Ver análise completa</a>
+    {% else %}<p class="vazio">Ainda não há previsão para este bairro.</p><a class="botao botao-primario" href="{{ url_for('previsao',bairro=bairro.id) }}">Gerar análise</a>{% endif %}
+  </div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho"><div><h2>Histórico do bairro</h2><small>Origem de cada registro fica identificada no banco.</small></div></div>
+  <div class="tabela-scroll"><table class="tabela tabela-compacta">
+    <thead><tr><th>Período</th><th>Casos</th><th>Chuva</th><th>Temp.</th><th>Focos</th><th>Origem</th></tr></thead>
+    <tbody>{% for r in registros|reverse %}<tr><td>{{ r.periodo }}</td><td>{{ r.casos_dengue }}</td><td>{{ r.chuva_mm }}</td><td>{{ r.temperatura_media }}</td><td>{{ r.focos_mosquito }}</td><td><span class="tag tag-neutro">{{ r.origem }}</span></td></tr>{% else %}<tr><td colspan="6" class="vazio">Nenhum registro.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+window.dadosBairro={labels:{{ labels|tojson }},casos:{{ casos|tojson }},focos:{{ focos|tojson }}};
+</script>
+{% endblock %}

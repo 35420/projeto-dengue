@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block titulo %}Dashboard — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="hero">
+  <div>
+    <span class="eyebrow">MONITORAMENTO • FRANCA/SP</span>
+    <h1>Inteligência preditiva para prevenção</h1>
+    <p class="subtitulo">Dados epidemiológicos, indicadores por bairro e previsão de curto prazo em um painel de suporte à decisão.</p>
+  </div>
+  <div class="hero-acoes">
+    <form action="{{ url_for('atualizar_fontes') }}" method="post"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="botao botao-primario">↻ Pesquisar dados agora</button></form>
+    <a class="botao botao-secundario" href="{{ url_for('assistente') }}">Abrir IA</a>
+    <a class="botao" href="{{ url_for('cadastro') }}">Inserir dados</a>
+  </div>
+</section>
+
+<section class="painel destaque-auto">
+  <div class="painel-cabecalho">
+    <div><h2>Monitoramento automático</h2><small>Consulta semanal ao InfoDengue/Fiocruz, sem misturar a fonte externa com a base local de demonstração.</small></div>
+    <span class="tag tag-azul">{{ oficial.atualizacao.status if oficial.atualizacao else 'pendente' }}</span>
+  </div>
+  <div class="auto-grid">
+    <div><span>Fonte</span><strong>InfoDengue / Fiocruz</strong></div>
+    <div><span>Última semana</span><strong>{{ oficial.ultimo.semana_epidemiologica if oficial.ultimo else '—' }}</strong></div>
+    <div><span>Casos acumulados</span><strong>{{ oficial.ultimo.casos_acumulados if oficial.ultimo else '—' }}</strong></div>
+    <div><span>Incidência /100 mil</span><strong>{{ '%.2f'|format(oficial.ultimo.incidencia_100k) if oficial.ultimo else '—' }}</strong></div>
+  </div>
+  <p class="nota">A fonte pode revisar semanas recentes. O sistema atualiza automaticamente a cada {{ 6 }} horas ou por atualização manual.</p>
+</section>
+
+<section class="painel filtro-painel">
+  <div><strong>Foco do painel</strong><small>Filtre os gráficos por bairro sem alterar o banco.</small></div>
+  <form method="get" class="filtro-form">
+    <select name="bairro"><option value="">Todos os bairros</option>{% for b in bairros %}<option value="{{ b.id }}" {% if filtro_id == b.id %}selected{% endif %}>{{ b.nome }}</option>{% endfor %}</select>
+    <button class="botao botao-pequeno botao-primario">Aplicar</button>
+    {% if filtro_id %}<a class="botao botao-pequeno" href="{{ url_for('index') }}">Limpar</a>{% endif %}
+  </form>
+</section>
+
+<section class="cartoes cartoes-6">
+  <div class="cartao acento-azul"><span class="cartao-numero">{{ total_bairros }}</span><span class="cartao-label">Bairros monitorados</span></div>
+  <div class="cartao acento-roxo"><span class="cartao-numero">{{ total_registros }}</span><span class="cartao-label">Registros locais</span></div>
+  <div class="cartao acento-laranja"><span class="cartao-numero">{{ total_casos }}</span><span class="cartao-label">Casos na base local</span></div>
+  <div class="cartao acento-vermelho"><span class="cartao-numero">{{ alto }}</span><span class="cartao-label">Alto risco</span></div>
+  <div class="cartao acento-amarelo"><span class="cartao-numero">{{ medio }}</span><span class="cartao-label">Médio risco</span></div>
+  <div class="cartao acento-verde"><span class="cartao-numero">{{ baixo }}</span><span class="cartao-label">Baixo risco</span></div>
+</section>
+
+<section class="kpi-strip">
+  <div><span>Casos oficiais acumulados</span><strong>{{ oficial.ultimo.casos_acumulados if oficial.ultimo else '—' }}</strong></div>
+  <div><span>Alerta municipal da fonte</span><strong>{% if oficial.ultimo %}{{ {1:'Verde',2:'Amarelo',3:'Laranja',4:'Vermelho'}.get(oficial.ultimo.nivel_alerta,'—') }}{% else %}—{% endif %}</strong></div>
+  <div><span>Chuva do último mês</span><strong>{{ '%.1f'|format(clima_ultimo.chuva_mm) if clima_ultimo else '—' }} mm</strong></div>
+  <div><span>Temperatura automática</span><strong>{{ '%.1f'|format(clima_ultimo.temperatura_media) if clima_ultimo and clima_ultimo.temperatura_media is not none else '—' }} °C</strong></div>
+</section>
+
+<section class="grid-2">
+  <div class="painel"><div class="painel-cabecalho"><div><h2>Casos por bairro</h2><small>Acumulado da base local.</small></div><span class="tag tag-azul">Base local</span></div><div class="grafico-scroll"><div class="grafico-wrap alto"><canvas id="graficoCasos"></canvas></div></div></div>
+  <div class="painel"><div class="painel-cabecalho"><div><h2>Risco atual</h2><small>Última análise disponível.</small></div><span class="tag tag-roxo">0–100</span></div><div class="grafico-scroll"><div class="grafico-wrap alto"><canvas id="graficoRisco"></canvas></div></div></div>
+</section>
+
+<section class="grid-2">
+  <div class="painel"><div class="painel-cabecalho"><div><h2>Incidência acumulada</h2><small>Casos por 1.000 habitantes.</small></div></div><div class="grafico-scroll"><div class="grafico-wrap"><canvas id="graficoIncidencia"></canvas></div></div></div>
+  <div class="painel"><div class="painel-cabecalho"><div><h2>Histórico municipal</h2><small>Casos notificados por semana na fonte externa.</small></div></div><div class="grafico-wrap"><canvas id="graficoOficial"></canvas></div></div>
+</section>
+
+<section class="painel">
+  <div class="painel-cabecalho">
+    <div>
+      <h2>Top 5 bairros prioritários</h2>
+      <small>Ordenados pela pontuação atual. Use o mapa para explorar.</small>
+    </div>
+    <a href="{{ url_for('bairros_page') }}" class="link-destaque">Ver mapa →</a>
+  </div>
+  {% if criticos %}
+  <div class="lista-risco">
+  {% for b in criticos %}
+    <div class="linha-risco">
+      <div class="linha-risco-nome">
+        <span class="ranking">{{ loop.index }}</span>
+        <div>
+          <strong>{{ b.nome }}</strong>
+          <small>{{ b.tendencia.texto }}{% if b.tendencia.variacao is not none %} • {{ '%+.1f'|format(b.tendencia.variacao) }}%{% endif %}</small>
+        </div>
+      </div>
+      <div class="linha-risco-status">
+        <strong>{{ '%.1f'|format(b.pontuacao) if b.pontuacao is not none else '—' }} pts</strong>
+        <span class="selo selo-{{ b.cor }}">{{ b.classificacao }}</span>
+        {% if b.previsao_casos is not none %}
+          <small class="texto-suave">→ {{ '%.1f'|format(b.previsao_casos) }} casos</small>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  {% else %}
+  <p class="vazio">Gere uma análise para montar o ranking.</p>
+  {% endif %}
+</section>
+
+<section class="painel nota-cientifica">
+  <div class="painel-cabecalho"><div><h2>Leitura correta do resultado</h2><small>Evita confundir um sistema acadêmico com uma previsão epidemiológica oficial.</small></div></div>
+  <div class="grid-3 compact">
+    <div><span class="tag tag-verde">Risco atual</span><p>Indicador didático de 0 a 100 baseado em casos, focos, chuva e temperatura.</p></div>
+    <div><span class="tag tag-roxo">Previsão</span><p>Quando há histórico suficiente, a Random Forest estima o próximo período e gera um intervalo pelas árvores.</p></div>
+    <div><span class="tag tag-azul">Fonte externa</span><p>Dados municipais do InfoDengue são apresentados separadamente e podem ser revisados.</p></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.dadosDashboard = {
+  labels: {{ labels_casos|tojson }},
+  casos: {{ dados_casos|tojson }},
+  risco: {{ dados_risco|tojson }},
+  incidencia: {{ dados_incidencia|tojson }},
+  oficialDatas: {{ oficial.serie|map(attribute='data_inicio_semana')|list|tojson }},
+  oficialCasos: {{ oficial.serie|map(attribute='casos_semana')|list|tojson }}
+};
+</script>
+{% endblock %}

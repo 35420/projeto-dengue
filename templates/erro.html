@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block titulo %}Erro {{ codigo }} — Prevenção Dengue{% endblock %}
+{% block conteudo %}
+<section class="painel erro-pagina"><div class="erro-codigo">{{ codigo }}</div><h1>Algo não saiu como esperado</h1><p>{{ mensagem }}</p><a class="botao botao-primario" href="{{ url_for('index') }}">Voltar ao dashboard</a></section>
+{% endblock %}
