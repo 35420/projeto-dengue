@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import unicodedata
 import zipfile
 from collections import defaultdict, deque
 from datetime import date, datetime, timedelta
@@ -23,6 +24,7 @@ from urllib.request import Request, urlopen
 import pandas as pd
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, session, url_for
 
+from assistente_temas import resposta_tema_dengue
 from integridade import (
     chaves_nome_bairro as _chaves_nome_bairro,
     consumir_janela,
@@ -1118,49 +1120,93 @@ def resposta_assistente_local(pergunta, contexto):
     p = contexto.get("previsao_clima")
     nome = contexto.get("bairro_selecionado", {}).get("nome") if contexto.get("bairro_selecionado") else None
 
-    if any(x in q for x in ["chuva", "chover", "precipitacao", "tempo", "clima"]):
+    if "incub" not in q and any(x in q for x in ["chuva", "chover", "precipitacao", "tempo", "clima"]):
         if not p or not p.get("ok"):
             return "Não consegui consultar a previsão agora. Tente novamente em alguns instantes.", "previsão meteorológica"
         maior = p["maior_probabilidade"]
         linhas = []
         for d in p["dias"][:3]:
             if d["probabilidade_max"] is not None:
-                linhas.append(f'{d["data"]}: {d["probabilidade_max"]:.0f}% de chance de precipitação e {d["precipitacao_mm"]:.1f} mm previstos')
-        titulo = f"Para {nome}" if nome else "Para o bairro selecionado"
-        return (f'{titulo}, a maior probabilidade de precipitação nos próximos {len(p["dias"])} dias é de '
-                f'{maior["probabilidade_max"]:.0f}% em {maior["data"]}. Chuva acumulada prevista no período: '
-                f'{p["chuva_acumulada_prevista_mm"]:.1f} mm.\n\n' + "\n".join(linhas)), "Open-Meteo"
+                linhas.append(f'{d["data"]}: {d["probabilidade_max"]:.0f}% de chance e {d["precipitacao_mm"]:.1f} mm')
+        titulo = nome or "o bairro selecionado"
+        return (
+            f"Previsão de chuva\n"
+            f"Para {titulo}, a maior chance nos próximos {len(p['dias'])} dias é "
+            f"{maior['probabilidade_max']:.0f}% em {maior['data']}.\n\n"
+            f"Chuva acumulada prevista\n"
+            f"{p['chuva_acumulada_prevista_mm']:.1f} mm.\n\n"
+            f"Próximos dias\n" + "\n".join(linhas)
+        ), "Open-Meteo"
 
     if any(x in q for x in ["qual bairro", "quais bairros", "maior tendencia", "mais casos", "mais risco", "pior bairro", "ranking"]):
         top = contexto["ranking_top5"]
         if not top:
-            return "Ainda não há previsões/riscos suficientes para formar um ranking.", "base local"
-        lista = "; ".join(f'{i+1}º {item["bairro"]} ({item["pontuacao"]:.1f} pts, {item["classificacao"]})' for i, item in enumerate(top[:5]))
-        return f"Pelos indicadores atuais da base do site, os bairros prioritários são: {lista}. Isso é uma classificação de apoio e não uma previsão epidemiológica oficial.", "IA preditiva / base local"
+            return "Ainda não há previsões suficientes para formar um ranking.", "base local"
+        lista = "\n".join(
+            f"{i+1}. {item['bairro']} — {item['pontuacao']:.1f} pts, {item['classificacao']}"
+            for i, item in enumerate(top[:5])
+        )
+        return (
+            "Bairros prioritários\n"
+            f"{lista}\n\n"
+            "Como ler\n"
+            "É uma classificação de apoio do projeto, não uma previsão epidemiológica oficial."
+        ), "IA preditiva / base local"
+
+    tema = resposta_tema_dengue(q)
+    if tema:
+        return tema
 
     if any(x in q for x in ["proteger", "protecao", "prevencao", "casa", "quintal", "cuidado", "cuidados", "mosquito", "larvas"]):
-        return ("Para reduzir criadouros do Aedes, a principal medida é eliminar água parada: mantenha caixas d’água bem tampadas, "
-                "limpe calhas e ralos, vire ou guarde recipientes que possam acumular água, mantenha pratos de plantas sem água acumulada "
-                "e descarte corretamente objetos sem uso no quintal. Faça uma vistoria semanal. Se encontrar um problema maior na vizinhança, "
-                "comunique o serviço municipal responsável."), "orientação preventiva"
+        return (
+            "O que mais reduz o mosquito\n"
+            "Elimine água parada.\n\n"
+            "Em casa e no quintal\n"
+            "• Tampe bem a caixa d’água\n"
+            "• Limpe calhas e ralos\n"
+            "• Vire ou guarde recipientes\n"
+            "• Deixe o prato das plantas sem água acumulada\n"
+            "• Descarte objetos sem uso\n\n"
+            "Rotina\n"
+            "Faça uma vistoria semanal. Se o problema for na vizinhança, avise o serviço municipal."
+        ), "orientação preventiva"
 
     if any(x in q for x in ["risco", "casos", "dengue", "tendencia", "tendência", "previsao", "previsão"]):
         if b:
-            futura = f' A previsão registrada para o próximo período é de {b.get("previsao_casos"):.1f} caso(s).' if b.get("previsao_casos") is not None else ''
-            pontos_txt = f'{b["pontuacao"]:.1f} pontos' if b.get("pontuacao") is not None else 'sem análise calculada'
+            pontos_txt = f'{b["pontuacao"]:.1f} pontos' if b.get("pontuacao") is not None else "sem análise calculada"
             classificacao_txt = b.get("classificacao") or "Sem análise"
-
-            origem_txt = f' Origem do último período considerado: {b.get("origem_ultimo")}.' if b.get("origem_ultimo") else ""
-            return (f'{b["nome"]} está classificado como {classificacao_txt}, com {pontos_txt} no indicador atual. '
-                    f'O sistema considera casos, focos, chuva e temperatura.{futura}{origem_txt} '
-                    f'Chuva e temperatura usadas na previsão são da série municipal.'), "IA preditiva / base local"
-        return "Selecione um bairro ou escreva o nome dele na pergunta. Assim eu consigo consultar o risco e os indicadores específicos.", "base local"
+            futura = (
+                f"\n\nPróximo período\n{b.get('previsao_casos'):.1f} caso(s) previstos."
+                if b.get("previsao_casos") is not None else ""
+            )
+            origem_txt = (
+                f"\n\nOrigem do último período\n{b.get('origem_ultimo')}."
+                if b.get("origem_ultimo") else ""
+            )
+            return (
+                f"{b['nome']}\n"
+                f"Classificação: {classificacao_txt}\n"
+                f"Indicador: {pontos_txt}\n\n"
+                "O que entra na conta\n"
+                "Casos, focos, chuva e temperatura. Chuva e temperatura vêm da série municipal."
+                f"{futura}{origem_txt}\n\n"
+                "Limite\n"
+                "Isto é um indicador do projeto, não uma decisão oficial de saúde."
+            ), "IA preditiva / base local"
+        return (
+            "Falta o bairro\n"
+            "Selecione um bairro na lista ou escreva o nome dele na pergunta."
+        ), "base local"
 
     return (
-        "Posso ajudar com previsão de chuva, ranking de risco por bairro e orientações de prevenção. "
-        "Inclua o nome do bairro ou selecione um na lista para respostas mais específicas.",
-        "base local",
-    )
+        "Posso responder sobre\n"
+        "• Sintomas e sinais de alerta da dengue\n"
+        "• Quando procurar atendimento\n"
+        "• Transmissão, incubação e cuidados em casa\n"
+        "• Chuva, risco do bairro e prevenção do mosquito\n\n"
+        "Selecione um bairro quando a pergunta for sobre risco local.\n"
+        "Isto não é um diagnóstico."
+    ), "base local"
 
 
 def chamar_modelo_linguagem(pergunta, contexto, resposta_local):
@@ -1172,9 +1218,16 @@ def chamar_modelo_linguagem(pergunta, contexto, resposta_local):
     contexto_json = json.dumps(contexto, ensure_ascii=False, default=str)
     prompt = (
         "Você é o assistente do sistema acadêmico Prevenção Dengue — Franca/SP. "
+        "Pode responder, em linhas curtas, sobre sintomas e sinais de alerta, transmissão, o mosquito Aedes, "
+        "incubação em termos gerais, diferença geral com resfriado, quando procurar atendimento, prevenção, "
+        "risco do bairro, chuva e ranking. "
         "Responda em português do Brasil, de forma clara e curta. Use SOMENTE os dados do contexto para números e rankings. "
         "Não invente probabilidade, casos ou dados epidemiológicos. Diferencie claramente previsão meteorológica de previsão de dengue. "
         "Para prevenção, dê orientações gerais e seguras de eliminação de água parada. "
+        "Se a pergunta for sobre sintomas, compare com os sinais comuns da dengue e com sinais de alerta, "
+        "deixe claro que não é diagnóstico e não invente probabilidade de a pessoa ter dengue. "
+        "Oriente a procurar atendimento, sobretudo se houver sinal de alerta. "
+        "Não recomende aspirina nem ibuprofeno por conta própria. "
         "Se os dados estiverem ausentes, diga isso. Ao citar um número, mencione a origem que está no contexto. "
         "Chuva, temperatura e umidade são municipais. Não trate registro de demonstração como caso oficial. "
         "Nunca trate o resultado como diagnóstico ou decisão oficial de saúde pública.\n\n"
