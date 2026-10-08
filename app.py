@@ -5,7 +5,6 @@ Projeto acadêmico: Inteligência Preditiva e Ciência de Dados Aplicadas
 Autoria: Arthur Henrique
 """
 import csv
-import difflib
 import io
 import json
 import os
@@ -14,16 +13,45 @@ import secrets
 import sqlite3
 import tempfile
 import threading
-import unicodedata
+import time
 import zipfile
+from collections import defaultdict, deque
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import pandas as pd
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, session, url_for
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from integridade import (
+    chaves_nome_bairro as _chaves_nome_bairro,
+    consumir_janela,
+    gravar_casos_sinan,
+    melhor_bairro_oficial as _melhor_bairro_oficial,
+    normalizar_nome_bairro,
+    origem_http_permitida,
+    origem_permite_treino,
+    populacao_confiavel,
+    registrar_nomes_ignorados,
+    sanear_historico_misto,
+)
+from modelo import (
+    FEATURES,
+    MINIMO_REGISTROS_MODELO,
+    NOMES_FATORES,
+    PESO_CASOS,
+    PESO_CHUVA,
+    PESO_FOCOS,
+    PESO_TEMPERATURA,
+    ajustar_modelo,
+    calcular_risco_formula,
+    carregar_ambiental,
+    classificar_risco,
+    construir_dataset_temporal,
+    montar_entrada,
+    periodo_ordem as _periodo_ordem,
+    texto_baselines,
+)
 
 try:
     from bairros_oficiais import BAIRROS_OFICIAIS_FRANCA, BAIRROS_COM_COORDENADAS
@@ -103,7 +131,6 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = _carregar_secret_key()
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
 
-MINIMO_REGISTROS_MODELO = 20
 ATUALIZACAO_AUTOMATICA_HORAS = 6
 ATUALIZACAO_SINAN_HORAS = 24
 ATUALIZACAO_IBGE_HORAS = 24 * 7
@@ -124,10 +151,6 @@ FRANCA_LAT_MIN, FRANCA_LAT_MAX = -20.64, -20.45
 FRANCA_LON_MIN, FRANCA_LON_MAX = -47.48, -47.31
 AUTO_WEATHER_TIMEOUT = 20
 SQLITE_BUSY_TIMEOUT_MS = 30000
-PESO_CASOS = 0.35
-PESO_FOCOS = 0.30
-PESO_CHUVA = 0.20
-PESO_TEMPERATURA = 0.15
 FONTES_AUTOMATICAS = (
     "InfoDengue / Fiocruz",
     "Open-Meteo / reanálise meteorológica",
@@ -136,23 +159,20 @@ FONTES_AUTOMATICAS = (
 )
 
 AUTOMATIC_COLLECT_LOCK = threading.Lock()
+_MODEL_LOCK = threading.Lock()
+MODELO_VERSAO = "2026-10-serie-observada"
+ASSISTENTE_LIMITE = 20
+ASSISTENTE_JANELA_S = 600
+_ASSISTENTE_HITS = defaultdict(deque)
 
 _MODEL_CACHE = {
     "modelo": None,
-    "features": None,
+    "features": FEATURES,
     "df": None,
     "timestamp": None,
     "metrica": None,
-}
-
-NOMES_FATORES = {
-    "casos_dengue": "Casos atuais",
-    "focos_mosquito": "Focos do mosquito",
-    "chuva_mm": "Chuva",
-    "temperatura_media": "Temperatura média",
-    "casos_lag1": "Casos do período anterior",
-    "casos_lag2": "Casos de dois períodos atrás",
-    "media_3": "Média móvel de 3 períodos",
+    "preenchimento": {},
+    "versao": None,
 }
 
 # ---------------------------------------------------------------------------
@@ -313,6 +333,23 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sinan_nomes_ignorados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL UNIQUE,
+            motivo TEXT,
+            ocorrencias INTEGER DEFAULT 0,
+            atualizado_em TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS meta_sistema (
+            chave TEXT PRIMARY KEY,
+            valor TEXT
+        )
+    """)
+
     for column, definition in [
         ("origem", "TEXT DEFAULT 'demonstração'"),
         ("chuva_origem", "TEXT DEFAULT 'manual'"),
@@ -346,28 +383,27 @@ def init_db():
         lat, lon = BAIRROS_COM_COORDENADAS.get(nome, (-20.5386, -47.4008))
         cur.execute("""
             INSERT INTO bairros (nome, populacao, populacao_origem, latitude, longitude, geometria_origem)
-            VALUES (?, 8000, 'Consolidado Franca/SP', ?, ?, 'Mapeamento Oficial Franca/SP')
+            VALUES (?, NULL, 'nao_informada', ?, ?, 'Mapeamento Oficial Franca/SP')
             ON CONFLICT(nome) DO UPDATE SET
                 latitude = COALESCE(bairros.latitude, excluded.latitude),
-                longitude = COALESCE(bairros.longitude, excluded.longitude),
-                populacao = COALESCE(bairros.populacao, 8000)
+                longitude = COALESCE(bairros.longitude, excluded.longitude)
         """, (nome, lat, lon))
 
     conn.execute("UPDATE dados_historicos SET casos_origem='demonstração', focos_origem='demonstração', chuva_origem='demonstração', temperatura_origem='demonstração' WHERE origem='demonstração'")
     conn.commit()
 
-    total_bairros = cur.execute("SELECT COUNT(*) FROM bairros").fetchone()[0]
-    total_dados = cur.execute("SELECT COUNT(*) FROM dados_historicos").fetchone()[0]
-
-    if total_bairros == 0:
-        inserir_dados_demo(conn)
-    elif total_dados > 0 and total_dados <= 15:
-        expandir_historico_demo(conn)
-
+    conn.execute("""
+        UPDATE bairros
+        SET populacao = NULL, populacao_origem = 'nao_informada'
+        WHERE populacao_origem = 'Consolidado Franca/SP'
+    """)
+    sanear_historico_misto(conn)
+    conn.commit()
     conn.close()
 
 
 def inserir_dados_demo(conn):
+    """Série sintética antiga. O arranque não chama mais esta função."""
     cur = conn.cursor()
     bairros = [
         ("Centro", 15000), ("Cidade Nova", 12000), ("Jardim América", 9000),
@@ -435,44 +471,21 @@ def contexto_global():
 
 @app.before_request
 def proteger_post():
-    if request.method == "POST":
-        if request.path.startswith("/api/"):
-            return
-        enviado = request.form.get("_csrf", "")
-        esperado = session.get("_csrf", "")
-        if not esperado or not secrets.compare_digest(enviado, esperado):
-            abort(400, description="Token de segurança inválido. Recarregue a página e tente novamente.")
-
-
-def normalizar_nome_bairro(valor):
-    texto = unicodedata.normalize("NFKD", str(valor or "")).encode("ascii", "ignore").decode("ascii")
-    texto = texto.upper().strip()
-    texto = re.sub(r"[./,_-]+", " ", texto)
-    for abrev, extenso in (("JD", "JARDIM"), ("VL", "VILA"), ("PQ", "PARQUE"), ("RES", "RESIDENCIAL"), ("CONJ", "CONJUNTO"), ("PROL", "PROLONGAMENTO"), ("COND", "CONDOMINIO")):
-        texto = re.sub(rf"\b{abrev}\.?\b", extenso, texto)
-    texto = re.sub(r"[^A-Z0-9 ]+", " ", texto)
-    return re.sub(r"\s+", " ", texto).strip()
-
-def _chaves_nome_bairro(valor):
-    base = normalizar_nome_bairro(valor)
-    sem_genericos = re.sub(r"\b(JARDIM|VILA|PARQUE|RESIDENCIAL|CONJUNTO|PROLONGAMENTO|CONDOMINIO|CHACARA|CHACARAS)\b", " ", base)
-    sem_genericos = re.sub(r"\s+", " ", sem_genericos).strip()
-    return {base, sem_genericos}
-
-def _melhor_bairro_oficial(nome, indice):
-    chaves = _chaves_nome_bairro(nome)
-    for chave in chaves:
-        if chave and chave in indice:
-            return indice[chave]
-    melhor = None; score_max = 0.0
-    for chave, registro in indice.items():
-        if not chave or len(chave) < 5: continue
-        for alvo in chaves:
-            if not alvo: continue
-            score = difflib.SequenceMatcher(None, alvo, chave).ratio()
-            if score > score_max:
-                score_max = score; melhor = registro
-    return melhor if score_max >= 0.88 else None
+    if request.method != "POST":
+        return
+    if request.path.startswith("/api/"):
+        if not origem_http_permitida(
+            request.host,
+            request.headers.get("Origin", "").strip(),
+            request.headers.get("Referer", "").strip(),
+            request.remote_addr,
+        ):
+            abort(400, description="Origem da requisição não autorizada.")
+        return
+    enviado = request.form.get("_csrf", "")
+    esperado = session.get("_csrf", "")
+    if not esperado or not secrets.compare_digest(enviado, esperado):
+        abort(400, description="Token de segurança inválido. Recarregue a página e tente novamente.")
 
 
 BAIRROS_OFICIAIS_POR_NORM = {normalizar_nome_bairro(nome): nome for nome in BAIRROS_OFICIAIS_FRANCA}
@@ -587,7 +600,7 @@ def _ler_colunas_csv_sinan(zip_path, ano):
 def atualizar_casos_bairro_sinan(force=False, anos=SINAN_ANOS_AUTOMATICOS):
     conn = get_db(); fonte = "SINAN/Dengue - Ministério da Saúde"
     if not force and not precisa_atualizar_fonte(conn, fonte): return {"ok": True, "atualizado": False, "mensagem": "Casos por bairro em cache."}
-    total_periodos = 0; total_bairros = set(); arquivos = []; anos_sem_bairro = []
+    total_periodos = 0; total_bairros = set(); arquivos = []; anos_sem_bairro = []; ignorados = {}
     try:
         bairros_db = conn.execute("SELECT id,nome FROM bairros").fetchall()
         indice = {}
@@ -619,13 +632,22 @@ def atualizar_casos_bairro_sinan(force=False, anos=SINAN_ANOS_AUTOMATICOS):
                         for (bairro_norm, periodo), qtd in chunk.groupby(['bairro_norm', 'periodo'], dropna=False).size().items():
                             if not bairro_norm or not periodo: continue
                             row = _melhor_bairro_oficial(bairro_norm, indice)
-                            if not row: continue
+                            if not row:
+                                ignorados[bairro_norm] = ignorados.get(bairro_norm, 0) + int(qtd)
+                                continue
                             key = (row['id'], periodo); agregados[key] = agregados.get(key, 0) + int(qtd); total_bairros.add(row['id'])
             finally:
                 zf.close()
         for (bairro_id, periodo), casos in agregados.items():
-            conn.execute("""INSERT INTO dados_historicos (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,casos_origem,focos_origem) VALUES(?,?,?,0,0,0,?,?,?) ON CONFLICT(bairro_id,periodo) DO UPDATE SET casos_dengue=excluded.casos_dengue, casos_origem='automatico - SINAN/Dengue', origem=CASE WHEN dados_historicos.origem IN ('manual','importado') THEN dados_historicos.origem ELSE 'SINAN/Dengue' END""", (bairro_id, periodo, casos, fonte, 'automatico - SINAN/Dengue', 'ausente')); total_periodos += 1
+            if gravar_casos_sinan(conn, bairro_id, periodo, casos, fonte):
+                total_periodos += 1
+        sanear_historico_misto(conn)
+        if ignorados:
+            registrar_nomes_ignorados(conn, ignorados, datetime.now().isoformat(timespec="seconds"))
         aviso = f" Anos sem coluna de bairro: {', '.join(map(str, anos_sem_bairro))}." if anos_sem_bairro else ''
+        if ignorados:
+            aviso += f" {len(ignorados)} nome(s) sem correspondência segura ficaram de fora."
+        aviso += " Cadastros manuais e importados não foram substituídos."
         if total_periodos:
             msg = (
                 f"SINAN vinculado em {len(total_bairros)} bairro(s) e {total_periodos} período(s). "
@@ -670,69 +692,80 @@ def atualizar_dados_oficiais_franca(force=False):
     if not force and not precisa_atualizar_fonte(conn, fonte):
         return {"ok": True, "atualizado": False, "mensagem": "Dados epidemiológicos externos em cache."}
 
-    ano = date.today().year
-    params = {
-        "geocode": INFO_DENGUE_GEOCODE,
-        "disease": "dengue",
-        "format": "json",
-        "ew_start": 1, "ew_end": 53,
-        "ey_start": ano, "ey_end": ano,
-    }
-    url = INFO_DENGUE_API + "?" + urlencode(params)
+    ano_fim = date.today().year
+    anos = range(ano_fim - 2, ano_fim + 1)
     try:
-        payload = _ler_json_url(url)
-        itens = _extrair_itens(payload)
-        if not itens:
-            raise ValueError("A fonte não retornou registros para Franca.")
-
         gravados = 0
+        falhas = []
         agora = datetime.now().isoformat(timespec="seconds")
-        for item in itens:
-            data_inicio = item.get("data_iniSE") or item.get("data") or item.get("data_inicio_semana")
-            if not data_inicio:
+        for ano in anos:
+            params = {
+                "geocode": INFO_DENGUE_GEOCODE,
+                "disease": "dengue",
+                "format": "json",
+                "ew_start": 1, "ew_end": 53,
+                "ey_start": ano, "ey_end": ano,
+            }
+            url = INFO_DENGUE_API + "?" + urlencode(params)
+            try:
+                itens = _extrair_itens(_ler_json_url(url))
+            except Exception:
+                falhas.append(str(ano))
                 continue
-            se_raw = item.get("SE", item.get("se"))
-            se = int(_num(se_raw, 0)) if se_raw not in (None, "") else None
-            casos = int(_num(item.get("casos"), 0))
-            casos_est = _num(item.get("casos_est"), 0)
-            acumulados = int(_num(item.get("notif_accum_year"), 0))
-            incidencia = _num(item.get("p_inc100k", item.get("inc")), 0)
-            nivel = int(_num(item.get("nivel"), 1))
-            rt_val = item.get("Rt", item.get("rt"))
-            rt = _num(rt_val) if rt_val not in (None, "") else None
-            prt = item.get("p_rt1", item.get("prt1"))
-            prt = _num(prt) if prt not in (None, "") else None
-            receptivo = int(_num(item.get("receptivo"), 0))
-            transmissao = int(_num(item.get("transmissao"), 0))
+            if not itens:
+                falhas.append(str(ano))
+                continue
+            for item in itens:
+                data_inicio = item.get("data_iniSE") or item.get("data") or item.get("data_inicio_semana")
+                if not data_inicio:
+                    continue
+                se_raw = item.get("SE", item.get("se"))
+                se = int(_num(se_raw, 0)) if se_raw not in (None, "") else None
+                casos = int(_num(item.get("casos"), 0))
+                casos_est = _num(item.get("casos_est"), 0)
+                acumulados = int(_num(item.get("notif_accum_year"), 0))
+                incidencia = _num(item.get("p_inc100k", item.get("inc")), 0)
+                nivel = int(_num(item.get("nivel"), 1))
+                rt_val = item.get("Rt", item.get("rt"))
+                rt = _num(rt_val) if rt_val not in (None, "") else None
+                prt = item.get("p_rt1", item.get("prt1"))
+                prt = _num(prt) if prt not in (None, "") else None
+                receptivo = int(_num(item.get("receptivo"), 0))
+                transmissao = int(_num(item.get("transmissao"), 0))
 
-            conn.execute("""
-                INSERT INTO dados_oficiais_franca
-                (data_inicio_semana, semana_epidemiologica, casos_semana, casos_estimados,
-                 casos_acumulados, incidencia_100k, nivel_alerta, rt, prob_rt_maior_1,
-                 receptivo, transmissao, fonte, atualizado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(data_inicio_semana, fonte) DO UPDATE SET
-                    semana_epidemiologica=excluded.semana_epidemiologica,
-                    casos_semana=excluded.casos_semana,
-                    casos_estimados=excluded.casos_estimados,
-                    casos_acumulados=excluded.casos_acumulados,
-                    incidencia_100k=excluded.incidencia_100k,
-                    nivel_alerta=excluded.nivel_alerta,
-                    rt=excluded.rt,
-                    prob_rt_maior_1=excluded.prob_rt_maior_1,
-                    receptivo=excluded.receptivo,
-                    transmissao=excluded.transmissao,
-                    atualizado_em=excluded.atualizado_em
-            """, (data_inicio, se, casos, casos_est, acumulados, incidencia, nivel,
-                  rt, prt, receptivo, transmissao, fonte, agora))
-            gravados += 1
+                conn.execute("""
+                    INSERT INTO dados_oficiais_franca
+                    (data_inicio_semana, semana_epidemiologica, casos_semana, casos_estimados,
+                     casos_acumulados, incidencia_100k, nivel_alerta, rt, prob_rt_maior_1,
+                     receptivo, transmissao, fonte, atualizado_em)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(data_inicio_semana, fonte) DO UPDATE SET
+                        semana_epidemiologica=excluded.semana_epidemiologica,
+                        casos_semana=excluded.casos_semana,
+                        casos_estimados=excluded.casos_estimados,
+                        casos_acumulados=excluded.casos_acumulados,
+                        incidencia_100k=excluded.incidencia_100k,
+                        nivel_alerta=excluded.nivel_alerta,
+                        rt=excluded.rt,
+                        prob_rt_maior_1=excluded.prob_rt_maior_1,
+                        receptivo=excluded.receptivo,
+                        transmissao=excluded.transmissao,
+                        atualizado_em=excluded.atualizado_em
+                """, (data_inicio, se, casos, casos_est, acumulados, incidencia, nivel,
+                      rt, prt, receptivo, transmissao, fonte, agora))
+                gravados += 1
 
+        if not gravados:
+            raise ValueError("A fonte não retornou registros para Franca.")
+        msg = f"Consulta concluída: {gravados} semana(s) entre {ano_fim - 2} e {ano_fim}."
+        if falhas:
+            msg += f" Anos sem resposta: {', '.join(falhas)}."
         conn.execute(
             "INSERT INTO atualizacoes_fontes (fonte,status,mensagem,registros) VALUES (?,?,?,?)",
-            (fonte, "sucesso", f"Consulta concluída: {gravados} semana(s).", gravados),
+            (fonte, "sucesso", msg, gravados),
         )
         conn.commit()
-        return {"ok": True, "atualizado": True, "mensagem": f"Dados atualizados ({gravados} semana(s))."}
+        return {"ok": True, "atualizado": True, "mensagem": msg}
     except Exception as exc:
         conn.rollback()
         conn.execute(
@@ -1117,8 +1150,10 @@ def resposta_assistente_local(pergunta, contexto):
             pontos_txt = f'{b["pontuacao"]:.1f} pontos' if b.get("pontuacao") is not None else 'sem análise calculada'
             classificacao_txt = b.get("classificacao") or "Sem análise"
 
+            origem_txt = f' Origem do último período considerado: {b.get("origem_ultimo")}.' if b.get("origem_ultimo") else ""
             return (f'{b["nome"]} está classificado como {classificacao_txt}, com {pontos_txt} no indicador atual. '
-                    f'O sistema considera casos, focos, chuva e temperatura.{futura}'), "IA preditiva / base local"
+                    f'O sistema considera casos, focos, chuva e temperatura.{futura}{origem_txt} '
+                    f'Chuva e temperatura usadas na previsão são da série municipal.'), "IA preditiva / base local"
         return "Selecione um bairro ou escreva o nome dele na pergunta. Assim eu consigo consultar o risco e os indicadores específicos.", "base local"
 
     return (
@@ -1140,7 +1175,9 @@ def chamar_modelo_linguagem(pergunta, contexto, resposta_local):
         "Responda em português do Brasil, de forma clara e curta. Use SOMENTE os dados do contexto para números e rankings. "
         "Não invente probabilidade, casos ou dados epidemiológicos. Diferencie claramente previsão meteorológica de previsão de dengue. "
         "Para prevenção, dê orientações gerais e seguras de eliminação de água parada. "
-        "Se os dados estiverem ausentes, diga isso. Nunca trate o resultado como diagnóstico ou decisão oficial de saúde pública.\n\n"
+        "Se os dados estiverem ausentes, diga isso. Ao citar um número, mencione a origem que está no contexto. "
+        "Chuva, temperatura e umidade são municipais. Não trate registro de demonstração como caso oficial. "
+        "Nunca trate o resultado como diagnóstico ou decisão oficial de saúde pública.\n\n"
         f"CONTEXTO:\n{contexto_json}\n\nPERGUNTA:\n{pergunta}\n\n"
         f"RESPOSTA DE SEGURANÇA/BASE LOCAL (use como fallback):\n{texto_local}"
     )
@@ -1252,41 +1289,6 @@ def agendar_coleta_automatica(force=False):
 # RISCO E MACHINE LEARNING (XAI IMPLEMENTADO)
 # ---------------------------------------------------------------------------
 
-def calcular_risco_formula(casos, chuva, temp, focos, focos_disponiveis=True):
-    casos = max(0.0, _num(casos))
-    chuva = max(0.0, _num(chuva))
-    temp = _num(temp, 25)
-
-    score_casos = min(100.0, (casos / 40.0) * 100)
-    score_chuva = min(100.0, (chuva / 150.0) * 100)
-    score_temp = max(0.0, 100 - abs(27 - temp) * 8)
-    if focos_disponiveis:
-        focos = max(0.0, _num(focos))
-        score_focos = min(100.0, (focos / 25.0) * 100)
-        risco = (
-            score_casos * PESO_CASOS
-            + score_focos * PESO_FOCOS
-            + score_chuva * PESO_CHUVA
-            + score_temp * PESO_TEMPERATURA
-        )
-    else:
-        peso_disponivel = PESO_CASOS + PESO_CHUVA + PESO_TEMPERATURA
-        risco = (
-            score_casos * PESO_CASOS
-            + score_chuva * PESO_CHUVA
-            + score_temp * PESO_TEMPERATURA
-        ) / peso_disponivel
-    return round(max(0.0, min(100.0, risco)), 1)
-
-
-def classificar_risco(pontuacao):
-    if pontuacao >= 70:
-        return "Alto", "vermelho"
-    if pontuacao >= 40:
-        return "Médio", "amarelo"
-    return "Baixo", "verde"
-
-
 def recomendacao_por_classificacao(classificacao, probabilidade=None, incidencia=None):
     base = {
         "Baixo": "Manter monitoramento preventivo, ações educativas e eliminação rotineira de criadouros.",
@@ -1301,15 +1303,6 @@ def recomendacao_por_classificacao(classificacao, probabilidade=None, incidencia
     return base + (" " + " ".join(extras) if extras else "")
 
 
-def _periodo_ordem(valor):
-    texto = str(valor or "")
-    m = re.match(r"^(\d{4})[-/](\d{1,2})$", texto)
-    if m:
-        return int(m.group(1)) * 100 + int(m.group(2))
-    nums = [int(x) for x in re.findall(r"\d+", texto)]
-    return nums[-1] if nums else 0
-
-
 def _registros_bairro_ordenados(conn, bairro_id):
     rows = conn.execute(
         "SELECT * FROM dados_historicos WHERE bairro_id=?",
@@ -1318,89 +1311,30 @@ def _registros_bairro_ordenados(conn, bairro_id):
     return sorted(rows, key=lambda x: (_periodo_ordem(x["periodo"]), x["id"]))
 
 
-def construir_dataset_temporal(conn):
-    rows = conn.execute("""
-        SELECT id, bairro_id, periodo, casos_dengue, chuva_mm,
-               temperatura_media, focos_mosquito
-        FROM dados_historicos
-        ORDER BY bairro_id, id
-    """).fetchall()
-    grupos = {}
-    for r in rows:
-        grupos.setdefault(r["bairro_id"], []).append(dict(r))
-    exemplos = []
-    for bairro_id, itens in grupos.items():
-        itens.sort(key=lambda x: (_periodo_ordem(x["periodo"]), x["id"]))
-        for i in range(2, len(itens)):
-            prev1 = itens[i - 1]
-            prev2 = itens[i - 2]
-            media3 = (itens[i - 1]["casos_dengue"] + itens[i - 2]["casos_dengue"] + itens[i - 3]["casos_dengue"]) / 3 if i >= 3 else (itens[i - 1]["casos_dengue"] + itens[i - 2]["casos_dengue"]) / 2
-            exemplos.append({
-                "bairro_id": bairro_id,
-                "periodo": itens[i]["periodo"],
-                "casos_lag1": prev1["casos_dengue"],
-                "casos_lag2": prev2["casos_dengue"],
-                "media_3": media3,
-                "chuva_mm": prev1["chuva_mm"],
-                "temperatura_media": prev1["temperatura_media"],
-                "focos_mosquito": prev1["focos_mosquito"],
-                "target": itens[i]["casos_dengue"],
-            })
-    return pd.DataFrame(exemplos)
-
-
 def treinar_modelo_temporal(conn, force=False):
     ultima_mod = conn.execute("SELECT MAX(data_cadastro) FROM dados_historicos").fetchone()[0]
-    if not force and _MODEL_CACHE["modelo"] is not None and _MODEL_CACHE["timestamp"] == ultima_mod:
+    with _MODEL_LOCK:
+        cache_pronto = (
+            not force
+            and _MODEL_CACHE.get("versao") == MODELO_VERSAO
+            and _MODEL_CACHE.get("timestamp") == ultima_mod
+            and _MODEL_CACHE.get("df") is not None
+        )
+        if cache_pronto:
+            return _MODEL_CACHE
+
+        df = construir_dataset_temporal(conn)
+        ajustado = ajustar_modelo(df)
+        _MODEL_CACHE.update({
+            "modelo": ajustado["modelo"],
+            "features": FEATURES,
+            "df": df,
+            "timestamp": ultima_mod,
+            "versao": MODELO_VERSAO,
+            "metrica": ajustado["metrica"],
+            "preenchimento": ajustado["preenchimento"],
+        })
         return _MODEL_CACHE
-
-    df = construir_dataset_temporal(conn)
-    features = ["casos_lag1", "casos_lag2", "media_3", "chuva_mm", "temperatura_media", "focos_mosquito"]
-    if len(df) < MINIMO_REGISTROS_MODELO:
-        _MODEL_CACHE["modelo"] = None
-        _MODEL_CACHE["df"] = df
-        _MODEL_CACHE["timestamp"] = ultima_mod
-        _MODEL_CACHE["features"] = features
-        return _MODEL_CACHE
-
-    df = df.sort_values("periodo", key=lambda s: s.map(_periodo_ordem)).reset_index(drop=True)
-    corte = max(1, int(len(df) * 0.8))
-    if corte >= len(df):
-        corte = len(df) - 1
-    treino = df.iloc[:corte]
-    teste = df.iloc[corte:]
-
-    modelo = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=8,
-        min_samples_leaf=1,
-        random_state=42,
-    )
-    modelo.fit(treino[features], treino["target"])
-
-    pred_treino = modelo.predict(treino[features])
-    pred_teste = modelo.predict(teste[features])
-    mae_treino = float(mean_absolute_error(treino["target"], pred_treino))
-    rmse_treino = float(mean_squared_error(treino["target"], pred_treino) ** 0.5)
-    mae_teste = float(mean_absolute_error(teste["target"], pred_teste))
-    rmse_teste = float(mean_squared_error(teste["target"], pred_teste) ** 0.5)
-    r2_teste = float(r2_score(teste["target"], pred_teste)) if len(teste) >= 2 else None
-
-    _MODEL_CACHE.update({
-        "modelo": modelo,
-        "features": features,
-        "df": df,
-        "timestamp": ultima_mod,
-        "metrica": {
-            "mae_treino": mae_treino,
-            "rmse_treino": rmse_treino,
-            "mae_teste": mae_teste,
-            "rmse_teste": rmse_teste,
-            "r2_teste": r2_teste,
-            "importancias": dict(zip(features, modelo.feature_importances_)),
-        }
-    })
-    return _MODEL_CACHE
 
 
 def ultimo_registro_bairro(conn, bairro_id):
@@ -1408,28 +1342,17 @@ def ultimo_registro_bairro(conn, bairro_id):
     return rows[-1] if rows else None
 
 
-def preparar_entrada_temporal(conn, bairro_id):
+def preparar_entrada_temporal(conn, bairro_id, preenchimento=None):
     rows = _registros_bairro_ordenados(conn, bairro_id)
-    if len(rows) < 2:
-        return None
-    atual = rows[-1]
-    anterior = rows[-2]
-    casos_recentes = [float(r["casos_dengue"]) for r in rows[-3:]]
-    return {
-        "casos_lag1": atual["casos_dengue"],
-        "casos_lag2": anterior["casos_dengue"],
-        "media_3": sum(casos_recentes) / len(casos_recentes),
-        "chuva_mm": atual["chuva_mm"],
-        "temperatura_media": atual["temperatura_media"],
-        "focos_mosquito": atual["focos_mosquito"],
-        "registro_id": atual["id"],
-    }
+    return montar_entrada(rows, carregar_ambiental(conn), preenchimento)
 
 
 def gerar_previsao(bairro_id, salvar=True):
     conn = get_db()
     bairro = conn.execute("SELECT * FROM bairros WHERE id=?", (bairro_id,)).fetchone()
-    registro = ultimo_registro_bairro(conn, bairro_id)
+    serie = _registros_bairro_ordenados(conn, bairro_id)
+    observados = [r for r in serie if origem_permite_treino(r["origem"], r["casos_origem"])]
+    registro = observados[-1] if observados else (serie[-1] if serie else None)
     if not bairro or not registro:
         return None
 
@@ -1478,7 +1401,7 @@ def gerar_previsao(bairro_id, salvar=True):
         ("temperatura_media", PESO_TEMPERATURA),
     ]
 
-    entrada = preparar_entrada_temporal(conn, bairro_id)
+    entrada = preparar_entrada_temporal(conn, bairro_id, cache.get("preenchimento"))
     aviso = ""
 
     if modelo and entrada:
@@ -1501,23 +1424,41 @@ def gerar_previsao(bairro_id, salvar=True):
         mae_teste = cache["metrica"]["mae_teste"]
         rmse_teste = cache["metrica"]["rmse_teste"]
         r2_teste = cache["metrica"]["r2_teste"]
-        aviso = f"Previsão de 1 período à frente. Modelo treinado com {len(cache['df'])} exemplos. O intervalo é obtido da distribuição das árvores."
+        aviso = (
+            f"Previsão de 1 período à frente, com {len(cache['df'])} exemplos observados "
+            f"(manual, importado ou automático). Chuva, temperatura e umidade vêm da série municipal. "
+            f"O intervalo é a dispersão das árvores, não uma probabilidade calibrada."
+            + texto_baselines(cache.get("metrica"))
+        )
     else:
         pontuacao = risco_atual
-        aviso = (
-            f"Histórico temporal insuficiente para treinar a previsão de casos com segurança "
-            f"(necessário: {MINIMO_REGISTROS_MODELO} exemplos derivados). O sistema mostra apenas o risco didático atual."
-        )
+        if not observados:
+            aviso = (
+                "Este bairro ainda não tem série observada. Registros de demonstração ficam de fora do modelo. "
+                "O número abaixo é só o indicador didático do último registro."
+            )
+        else:
+            aviso = (
+                f"Histórico observado insuficiente para treinar a previsão de casos "
+                f"(necessário: {MINIMO_REGISTROS_MODELO} exemplos derivados). "
+                "O sistema mostra apenas o risco didático atual."
+            )
 
     classificacao, cor = classificar_risco(pontuacao)
     populacao = bairro["populacao"]
-    incidencia = (registro["casos_dengue"] / populacao * 1000) if populacao else None
+    incidencia = (
+        registro["casos_dengue"] / populacao * 1000
+        if populacao_confiavel(populacao, bairro["populacao_origem"])
+        else None
+    )
     recomendacao = recomendacao_por_classificacao(classificacao, prob_aumento, incidencia)
 
     fatores_txt = " • ".join(f"{NOMES_FATORES.get(nome, nome)} ({peso * 100:.0f}%)" for nome, peso in fatores)
     observacao = (
-        "O risco combina um indicador ponderado atual com a previsão de casos quando o histórico é suficiente. "
-        "As métricas de teste são calculadas em uma divisão temporal e devem ser entendidas como avaliação acadêmica, não validação clínica."
+        "O risco combina um indicador ponderado atual com a previsão de casos quando o histórico observado é suficiente. "
+        "O teste separa períodos inteiros e compara o modelo com repetir o período anterior e com a média móvel. "
+        "É avaliação acadêmica, não validação clínica. Clima e umidade são municipais, não medidos dentro do bairro."
+        + texto_baselines(cache.get("metrica"))
     )
 
     resultado = {
@@ -1592,16 +1533,21 @@ def _tendencia_de_casos(atual, anterior):
     return {"texto": texto, "classe": classe, "variacao": round(variacao, 1)}
 
 
+def _serie_para_analise(rows):
+    observados = [r for r in rows if origem_permite_treino(r["origem"], r["casos_origem"])]
+    return observados if observados else list(rows)
+
+
 def tendencia_bairro(conn, bairro_id):
-    rows = _registros_bairro_ordenados(conn, bairro_id)
-    if len(rows) < 2:
+    serie = _serie_para_analise(_registros_bairro_ordenados(conn, bairro_id))
+    if len(serie) < 2:
         return _tendencia_de_casos(None, None)
-    return _tendencia_de_casos(rows[-1]["casos_dengue"], rows[-2]["casos_dengue"])
+    return _tendencia_de_casos(serie[-1]["casos_dengue"], serie[-2]["casos_dengue"])
 
 
 def buscar_resumo_bairros(conn):
     rows = conn.execute("""
-        SELECT b.id, b.nome, b.populacao,
+        SELECT b.id, b.nome, b.populacao, b.populacao_origem,
                COUNT(d.id) qtd_registros,
                COALESCE(SUM(d.casos_dengue),0) total_casos,
                COALESCE(SUM(d.focos_mosquito),0) total_focos,
@@ -1609,11 +1555,11 @@ def buscar_resumo_bairros(conn):
                COALESCE(AVG(d.temperatura_media),0) temperatura_media
         FROM bairros b
         LEFT JOIN dados_historicos d ON d.bairro_id=b.id
-        GROUP BY b.id, b.nome, b.populacao
+        GROUP BY b.id, b.nome, b.populacao, b.populacao_origem
         ORDER BY b.nome
     """).fetchall()
     historico = conn.execute("""
-        SELECT bairro_id, id, periodo, casos_dengue
+        SELECT bairro_id, id, periodo, casos_dengue, origem, casos_origem
         FROM dados_historicos
     """).fetchall()
     por_bairro = {}
@@ -1631,9 +1577,14 @@ def buscar_resumo_bairros(conn):
         d["cor"] = {"Alto": "vermelho", "Médio": "amarelo", "Baixo": "verde"}.get(d["classificacao"], "cinza")
         d["previsao_casos"] = float(prev["previsao_casos"]) if prev and prev["previsao_casos"] is not None else None
         d["probabilidade_aumento"] = float(prev["probabilidade_aumento"]) * 100 if prev and prev["probabilidade_aumento"] is not None else None
-        d["incidencia_1000"] = round(d["total_casos"] / d["populacao"] * 1000, 2) if d["populacao"] else None
-        serie = por_bairro.get(d["id"]) or []
+        d["incidencia_1000"] = (
+            round(d["total_casos"] / d["populacao"] * 1000, 2)
+            if populacao_confiavel(d["populacao"], d.get("populacao_origem"))
+            else None
+        )
+        serie = _serie_para_analise(por_bairro.get(d["id"]) or [])
         d["ultimo_periodo"] = serie[-1]["periodo"] if serie else None
+        d["origem_ultimo"] = serie[-1]["origem"] if serie else None
         if len(serie) < 2:
             d["tendencia"] = _tendencia_de_casos(None, None)
         else:
@@ -1723,6 +1674,9 @@ def api_assistente():
         bairro_id = parse_int(raw_bairro, 1) if raw_bairro else None
         if not pergunta:
             return {"ok": False, "mensagem": "Digite uma pergunta."}, 400
+        fila = _ASSISTENTE_HITS[request.remote_addr or "local"]
+        if not consumir_janela(fila, time.time(), ASSISTENTE_LIMITE, ASSISTENTE_JANELA_S):
+            return {"ok": False, "mensagem": "Muitas perguntas em pouco tempo. Aguarde alguns minutos e tente de novo."}, 429
         contexto = contexto_assistente(pergunta, bairro_id)
         resposta_local = resposta_assistente_local(pergunta, contexto)
         resposta, fonte = chamar_modelo_linguagem(pergunta, contexto, resposta_local)
@@ -1779,7 +1733,10 @@ def adicionar_bairro():
         return redirect(url_for("cadastro"))
     try:
         conn = get_db()
-        conn.execute("INSERT INTO bairros (nome,populacao) VALUES (?,?)", (nome, populacao))
+        conn.execute(
+            "INSERT INTO bairros (nome, populacao, populacao_origem) VALUES (?, ?, ?)",
+            (nome, populacao, "manual" if populacao is not None else "nao_informada"),
+        )
         conn.commit()
         flash(f'Bairro "{nome}" cadastrado.', "sucesso")
     except sqlite3.IntegrityError:
@@ -1803,7 +1760,17 @@ def editar_bairro(bairro_id):
         return redirect(url_for("cadastro"))
     try:
         conn = get_db()
-        cur = conn.execute("UPDATE bairros SET nome=?, populacao=? WHERE id=?", (nome, populacao, bairro_id))
+        atual = conn.execute("SELECT populacao, populacao_origem FROM bairros WHERE id=?", (bairro_id,)).fetchone()
+        if not atual:
+            flash("Bairro não encontrado.", "erro")
+            return redirect(url_for("cadastro"))
+        origem_pop = atual["populacao_origem"]
+        if populacao != atual["populacao"]:
+            origem_pop = "manual" if populacao is not None else "nao_informada"
+        cur = conn.execute(
+            "UPDATE bairros SET nome=?, populacao=?, populacao_origem=? WHERE id=?",
+            (nome, populacao, origem_pop, bairro_id),
+        )
         if not cur.rowcount:
             flash("Bairro não encontrado.", "erro")
         else:
@@ -1870,9 +1837,9 @@ def adicionar_dado():
     try:
         conn.execute("""
             INSERT INTO dados_historicos
-            (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,chuva_origem,temperatura_origem)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """, (bairro_id, periodo[:30], casos, chuva, temp, focos, "manual", chuva_origem, temp_origem))
+            (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,casos_origem,focos_origem,chuva_origem,temperatura_origem)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (bairro_id, periodo[:30], casos, chuva, temp, focos, "manual", "manual", "manual", chuva_origem, temp_origem))
         conn.commit()
         flash("Registro histórico adicionado.", "sucesso")
     except sqlite3.IntegrityError:
@@ -1895,7 +1862,7 @@ def editar_dado(dado_id):
         conn.execute("""
             UPDATE dados_historicos
             SET periodo=?, casos_dengue=?, chuva_mm=?, temperatura_media=?, focos_mosquito=?, origem='manual',
-                chuva_origem='manual', temperatura_origem='manual'
+                casos_origem='manual', focos_origem='manual', chuva_origem='manual', temperatura_origem='manual'
             WHERE id=?
         """, (periodo, casos, chuva, temp, focos, dado_id))
         conn.commit()
@@ -1953,17 +1920,19 @@ def importar_csv():
             try:
                 conn.execute("""
                     INSERT INTO dados_historicos
-                    (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,chuva_origem,temperatura_origem)
-                    VALUES (?,?,?,?,?,?,?,?,?)
+                    (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,casos_origem,focos_origem,chuva_origem,temperatura_origem)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(bairro_id,periodo) DO UPDATE SET
                         casos_dengue=excluded.casos_dengue,
                         chuva_mm=excluded.chuva_mm,
                         temperatura_media=excluded.temperatura_media,
                         focos_mosquito=excluded.focos_mosquito,
                         origem='importado',
+                        casos_origem='importado',
+                        focos_origem='importado',
                         chuva_origem='manual',
                         temperatura_origem='manual'
-                """, (bairro_id, periodo, casos, chuva, temp, focos, "importado", "manual", "manual"))
+                """, (bairro_id, periodo, casos, chuva, temp, focos, "importado", "importado", "importado", "manual", "manual"))
                 inseridos += 1
             except sqlite3.Error:
                 erros.append(idx + 2)
@@ -2047,7 +2016,11 @@ def detalhe_bairro(bairro_id):
     """, (bairro_id,)).fetchone()
     total_casos = sum(r["casos_dengue"] for r in registros)
     total_focos = sum(r["focos_mosquito"] for r in registros)
-    incidencia = (total_casos / bairro["populacao"] * 1000) if bairro["populacao"] else None
+    incidencia = (
+        total_casos / bairro["populacao"] * 1000
+        if populacao_confiavel(bairro["populacao"], bairro["populacao_origem"])
+        else None
+    )
     tendencia = tendencia_bairro(conn, bairro_id)
     labels = [r["periodo"] for r in registros]
     casos = [r["casos_dengue"] for r in registros]
@@ -2233,7 +2206,32 @@ def api_atualizar_coordenadas_bairro(bairro_id):
 
 init_db()
 
+def agendar_recalculo_modelo():
+    """Recalcula as previsões salvas uma vez quando a regra do modelo muda."""
+    def _run():
+        with app.app_context():
+            conn = get_db()
+            row = conn.execute("SELECT valor FROM meta_sistema WHERE chave='modelo_versao'").fetchone()
+            if row and row["valor"] == MODELO_VERSAO:
+                return
+            bairros = conn.execute("SELECT id FROM bairros").fetchall()
+            for bairro in bairros:
+                if ultimo_registro_bairro(conn, bairro["id"]):
+                    gerar_previsao(bairro["id"], salvar=True)
+            conn.execute(
+                """
+                INSERT INTO meta_sistema (chave, valor) VALUES ('modelo_versao', ?)
+                ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
+                """,
+                (MODELO_VERSAO,),
+            )
+            conn.commit()
+
+    threading.Thread(target=_run, daemon=True, name="dengue-modelo").start()
+
+
 if __name__ == "__main__":
+    agendar_recalculo_modelo()
     debug = os.environ.get("DENGUE_DEBUG", "0").lower() in ("1", "true", "sim")
     print("[DENGUE] Projeto carregado com sucesso.", flush=True)
     print("[DENGUE] Banco:", DB_PATH, flush=True)
