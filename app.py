@@ -120,12 +120,20 @@ SINAN_ANOS_AUTOMATICOS = (2024, 2025, 2026)
 CODIGO_MUNICIPIO_FRANCA = "351620"
 FRANCA_LAT = -20.5386
 FRANCA_LON = -47.4008
+FRANCA_LAT_MIN, FRANCA_LAT_MAX = -20.64, -20.45
+FRANCA_LON_MIN, FRANCA_LON_MAX = -47.48, -47.31
 AUTO_WEATHER_TIMEOUT = 20
 SQLITE_BUSY_TIMEOUT_MS = 30000
 PESO_CASOS = 0.35
 PESO_FOCOS = 0.30
 PESO_CHUVA = 0.20
 PESO_TEMPERATURA = 0.15
+FONTES_AUTOMATICAS = (
+    "InfoDengue / Fiocruz",
+    "Open-Meteo / reanálise meteorológica",
+    "SINAN/Dengue - Ministério da Saúde",
+    "IBGE Censo 2022 / camada de bairros",
+)
 
 AUTOMATIC_COLLECT_LOCK = threading.Lock()
 
@@ -502,7 +510,7 @@ def atualizar_populacao_bairros_ibge(force=False):
             "resultRecordCount": 2000
         })
         features = payload.get("features") or []
-        bairros_db = conn.execute("SELECT id,nome FROM bairros").fetchall()
+        bairros_db = conn.execute("SELECT id,nome,geometria_origem FROM bairros").fetchall()
         indice = {}
         for r in bairros_db:
             for chave in _chaves_nome_bairro(r["nome"]):
@@ -522,12 +530,26 @@ def atualizar_populacao_bairros_ibge(force=False):
             if lat is not None and lon is not None:
                 try:
                     lat_f, lon_f = float(lat), float(lon)
-                    if not (-20.62 <= lat_f <= -20.45 and -47.48 <= lon_f <= -47.32):
+                    if not (FRANCA_LAT_MIN <= lat_f <= FRANCA_LAT_MAX and FRANCA_LON_MIN <= lon_f <= FRANCA_LON_MAX):
                         lat, lon = None, None
                 except (ValueError, TypeError):
                     lat, lon = None, None
 
-            conn.execute("""UPDATE bairros SET populacao=COALESCE(?,populacao), populacao_origem='automatico - IBGE Censo 2022', latitude=COALESCE(?,latitude), longitude=COALESCE(?,longitude), geometria_origem=? WHERE id=?""", (pop, lat, lon, fonte, row["id"]))
+            ajuste_manual = str(row["geometria_origem"] or "").lower().startswith("ajuste manual")
+            if ajuste_manual:
+                conn.execute(
+                    """UPDATE bairros SET populacao=COALESCE(?,populacao),
+                       populacao_origem=CASE WHEN ? IS NULL THEN populacao_origem ELSE 'automatico - IBGE Censo 2022' END
+                       WHERE id=?""",
+                    (pop, pop, row["id"]),
+                )
+            else:
+                conn.execute(
+                    """UPDATE bairros SET populacao=COALESCE(?,populacao), populacao_origem='automatico - IBGE Censo 2022',
+                       latitude=COALESCE(?,latitude), longitude=COALESCE(?,longitude), geometria_origem=?
+                       WHERE id=?""",
+                    (pop, lat, lon, fonte, row["id"]),
+                )
             atualizados += 1
         msg = f"População/localização de {atualizados} bairro(s) sincronizada(s)."
         if sem_correspondencia: msg += f" {sem_correspondencia} registros do IBGE não tiveram correspondência territorial segura e foram ignorados."
@@ -601,17 +623,16 @@ def atualizar_casos_bairro_sinan(force=False, anos=SINAN_ANOS_AUTOMATICOS):
                             key = (row['id'], periodo); agregados[key] = agregados.get(key, 0) + int(qtd); total_bairros.add(row['id'])
             finally:
                 zf.close()
-        anos_validos = [int(a) for a in anos if int(a) <= date.today().year]
-        if agregados and anos_validos:
-            marks = ','.join('?' for _ in anos_validos)
-            conn.execute(f"UPDATE dados_historicos SET casos_dengue=0, casos_origem='automatico - SINAN/Dengue', origem='SINAN/Dengue' WHERE casos_origem='demonstração' AND substr(periodo,1,4) IN ({marks})", anos_validos)
         for (bairro_id, periodo), casos in agregados.items():
             conn.execute("""INSERT INTO dados_historicos (bairro_id,periodo,casos_dengue,chuva_mm,temperatura_media,focos_mosquito,origem,casos_origem,focos_origem) VALUES(?,?,?,0,0,0,?,?,?) ON CONFLICT(bairro_id,periodo) DO UPDATE SET casos_dengue=excluded.casos_dengue, casos_origem='automatico - SINAN/Dengue', origem=CASE WHEN dados_historicos.origem IN ('manual','importado') THEN dados_historicos.origem ELSE 'SINAN/Dengue' END""", (bairro_id, periodo, casos, fonte, 'automatico - SINAN/Dengue', 'ausente')); total_periodos += 1
         aviso = f" Anos sem coluna de bairro: {', '.join(map(str, anos_sem_bairro))}." if anos_sem_bairro else ''
         if total_periodos:
-            msg = f"Casos por bairro sincronizados ({len(total_bairros)} bairros, {total_periodos} períodos).{aviso}"
+            msg = (
+                f"SINAN vinculado em {len(total_bairros)} bairro(s) e {total_periodos} período(s). "
+                f"Bairros sem nome reconhecido no arquivo público mantiveram os registros já cadastrados.{aviso}"
+            )
         else:
-            msg = f"Não foi possível vincular casos do SINAN por bairro nos arquivos disponíveis.{aviso} Últimos dados salvos preservados."
+            msg = f"Não foi possível vincular casos do SINAN por bairro nos arquivos disponíveis.{aviso} Os registros já cadastrados foram preservados."
         conn.execute("INSERT INTO atualizacoes_fontes (fonte,status,mensagem,registros) VALUES (?,?,?,?)", (fonte, 'sucesso', msg, total_periodos)); conn.commit()
         return {"ok": True, "atualizado": bool(total_periodos), "mensagem": msg, "registros": total_periodos}
     except Exception as exc:
@@ -1182,9 +1203,8 @@ def status_origem_foco(valor):
 
 
 def resumo_coleta_automatica(conn):
-    fontes = ["InfoDengue / Fiocruz", "Open-Meteo / reanálise meteorológica", "SINAN/Dengue - Ministério da Saúde", "IBGE Censo 2022 / camada de bairros"]
     registros = {}
-    for fonte in fontes:
+    for fonte in FONTES_AUTOMATICAS:
         row = conn.execute("SELECT * FROM atualizacoes_fontes WHERE fonte=? ORDER BY id DESC LIMIT 1", (fonte,)).fetchone()
         registros[fonte] = dict(row) if row else None
     total_clima = conn.execute("SELECT COUNT(*) FROM dados_ambientais_franca").fetchone()[0]
@@ -1211,6 +1231,21 @@ def coletar_todos_automaticos(force=False):
         return {"ok": ok, "resultados": resultados}
     finally:
         AUTOMATIC_COLLECT_LOCK.release()
+
+
+def agendar_coleta_automatica(force=False):
+    if AUTOMATIC_COLLECT_LOCK.locked():
+        return
+    if not force:
+        conn = get_db()
+        if not any(precisa_atualizar_fonte(conn, fonte) for fonte in FONTES_AUTOMATICAS):
+            return
+
+    def _run():
+        with app.app_context():
+            coletar_todos_automaticos(force=force)
+
+    threading.Thread(target=_run, daemon=True, name="dengue-coleta").start()
 
 
 # ---------------------------------------------------------------------------
@@ -1540,15 +1575,14 @@ def latest_previsao_por_bairro():
     return {r["bairro_id"]: r for r in rows}
 
 
-def tendencia_bairro(conn, bairro_id):
-    rows = _registros_bairro_ordenados(conn, bairro_id)
-    if len(rows) < 2:
+def _tendencia_de_casos(atual, anterior):
+    if anterior is None:
         return {"texto": "Sem comparação", "classe": "neutro", "variacao": None}
-    atual, anterior = float(rows[-1]["casos_dengue"]), float(rows[-2]["casos_dengue"])
-    if anterior == 0:
-        variacao = 100.0 if atual > 0 else 0.0
+    atual_f, anterior_f = float(atual), float(anterior)
+    if anterior_f == 0:
+        variacao = 100.0 if atual_f > 0 else 0.0
     else:
-        variacao = (atual - anterior) / anterior * 100
+        variacao = (atual_f - anterior_f) / anterior_f * 100
     if variacao > 5:
         texto, classe = "Subindo", "alta"
     elif variacao < -5:
@@ -1558,6 +1592,13 @@ def tendencia_bairro(conn, bairro_id):
     return {"texto": texto, "classe": classe, "variacao": round(variacao, 1)}
 
 
+def tendencia_bairro(conn, bairro_id):
+    rows = _registros_bairro_ordenados(conn, bairro_id)
+    if len(rows) < 2:
+        return _tendencia_de_casos(None, None)
+    return _tendencia_de_casos(rows[-1]["casos_dengue"], rows[-2]["casos_dengue"])
+
+
 def buscar_resumo_bairros(conn):
     rows = conn.execute("""
         SELECT b.id, b.nome, b.populacao,
@@ -1565,13 +1606,21 @@ def buscar_resumo_bairros(conn):
                COALESCE(SUM(d.casos_dengue),0) total_casos,
                COALESCE(SUM(d.focos_mosquito),0) total_focos,
                COALESCE(AVG(d.chuva_mm),0) chuva_media,
-               COALESCE(AVG(d.temperatura_media),0) temperatura_media,
-               MAX(d.id) ultimo_registro_id
+               COALESCE(AVG(d.temperatura_media),0) temperatura_media
         FROM bairros b
         LEFT JOIN dados_historicos d ON d.bairro_id=b.id
         GROUP BY b.id, b.nome, b.populacao
         ORDER BY b.nome
     """).fetchall()
+    historico = conn.execute("""
+        SELECT bairro_id, id, periodo, casos_dengue
+        FROM dados_historicos
+    """).fetchall()
+    por_bairro = {}
+    for r in historico:
+        por_bairro.setdefault(r["bairro_id"], []).append(r)
+    for itens in por_bairro.values():
+        itens.sort(key=lambda x: (_periodo_ordem(x["periodo"]), x["id"]))
     previsoes = latest_previsao_por_bairro()
     resultado = []
     for row in rows:
@@ -1583,11 +1632,12 @@ def buscar_resumo_bairros(conn):
         d["previsao_casos"] = float(prev["previsao_casos"]) if prev and prev["previsao_casos"] is not None else None
         d["probabilidade_aumento"] = float(prev["probabilidade_aumento"]) * 100 if prev and prev["probabilidade_aumento"] is not None else None
         d["incidencia_1000"] = round(d["total_casos"] / d["populacao"] * 1000, 2) if d["populacao"] else None
-        d["ultimo_periodo"] = None
-        if d["ultimo_registro_id"]:
-            r = conn.execute("SELECT periodo FROM dados_historicos WHERE id=?", (d["ultimo_registro_id"],)).fetchone()
-            d["ultimo_periodo"] = r["periodo"] if r else None
-        d["tendencia"] = tendencia_bairro(conn, d["id"])
+        serie = por_bairro.get(d["id"]) or []
+        d["ultimo_periodo"] = serie[-1]["periodo"] if serie else None
+        if len(serie) < 2:
+            d["tendencia"] = _tendencia_de_casos(None, None)
+        else:
+            d["tendencia"] = _tendencia_de_casos(serie[-1]["casos_dengue"], serie[-2]["casos_dengue"])
         resultado.append(d)
     return resultado
 
@@ -1598,7 +1648,7 @@ def buscar_resumo_bairros(conn):
 
 @app.route("/")
 def index():
-    coletar_todos_automaticos(force=False)
+    agendar_coleta_automatica(force=False)
     conn = get_db()
     resumo = buscar_resumo_bairros(conn)
     filtro_id = request.args.get("bairro", type=int)
@@ -1934,11 +1984,8 @@ def importar_csv():
 
 @app.route("/bairros")
 def bairros_page():
+    agendar_coleta_automatica(force=False)
     conn = get_db()
-    try:
-        atualizar_populacao_bairros_ibge(force=False)
-    except Exception:
-        pass
     bairros = buscar_resumo_bairros(conn)
     ordem = request.args.get("ordem", "risco")
     if ordem == "incidencia":
@@ -1952,9 +1999,15 @@ def bairros_page():
 
     conn_map = get_db()
     coords = {}
-    for r in conn_map.execute("SELECT id, nome, latitude, longitude FROM bairros").fetchall():
+    for r in conn_map.execute("SELECT id, nome, latitude, longitude, geometria_origem FROM bairros").fetchall():
         lat, lon = r["latitude"], r["longitude"]
-        if lat is None or lon is None or not (-20.62 <= float(lat) <= -20.45 and -47.48 <= float(lon) <= -47.32):
+        ajuste_manual = str(r["geometria_origem"] or "").lower().startswith("ajuste manual")
+        dentro_mapa = (
+            lat is not None and lon is not None
+            and FRANCA_LAT_MIN <= float(lat) <= FRANCA_LAT_MAX
+            and FRANCA_LON_MIN <= float(lon) <= FRANCA_LON_MAX
+        )
+        if not dentro_mapa and not ajuste_manual:
             oficial_c = BAIRROS_COM_COORDENADAS.get(r["nome"])
             if oficial_c:
                 lat, lon = oficial_c
@@ -1968,7 +2021,16 @@ def bairros_page():
         item["latitude"], item["longitude"] = coords.get(b["id"], (None, None))
         mapa.append(item)
     mapa_geolocalizados = sum(1 for b in mapa if b["latitude"] is not None and b["longitude"] is not None)
-    return render_template("bairros.html", bairros=bairros, mapa=mapa, ordem=ordem, total_bairros=len(bairros), mapa_geolocalizados=mapa_geolocalizados)
+    coordenadas_oficiais = {nome: [lat, lon] for nome, (lat, lon) in BAIRROS_COM_COORDENADAS.items()}
+    return render_template(
+        "bairros.html",
+        bairros=bairros,
+        mapa=mapa,
+        ordem=ordem,
+        total_bairros=len(bairros),
+        mapa_geolocalizados=mapa_geolocalizados,
+        coordenadas_oficiais=coordenadas_oficiais,
+    )
 
 
 @app.route("/bairro/<int:bairro_id>")
@@ -2148,12 +2210,23 @@ def api_atualizar_coordenadas_bairro(bairro_id):
         if lat is None or lon is None:
             return {"ok": False, "mensagem": "Coordenadas inválidas."}, 400
 
+        enviado = (
+            request.headers.get("X-CSRFToken")
+            or dados.get("_csrf")
+            or ""
+        )
+        esperado = session.get("_csrf", "")
+        if not esperado or not secrets.compare_digest(str(enviado), esperado):
+            return {"ok": False, "mensagem": "Token de segurança inválido. Recarregue a página."}, 400
+
         conn = get_db()
-        conn.execute(
-            "UPDATE bairros SET latitude=?, longitude=?, populacao_origem='ajuste manual mapa' WHERE id=?",
+        cur = conn.execute(
+            "UPDATE bairros SET latitude=?, longitude=?, geometria_origem='ajuste manual mapa' WHERE id=?",
             (lat, lon, bairro_id)
         )
         conn.commit()
+        if not cur.rowcount:
+            return {"ok": False, "mensagem": "Bairro não encontrado."}, 404
         return {"ok": True, "mensagem": "Coordenadas salvas com sucesso no banco."}
     except Exception as exc:
         return {"ok": False, "mensagem": str(exc)}, 500

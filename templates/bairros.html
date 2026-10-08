@@ -286,53 +286,7 @@ document.addEventListener("DOMContentLoaded", function() {
   camadaSatelite.addTo(m);
   camadaRotulos.addTo(m);
 
-  const COORDENADAS_FRANCA = {
-    'Centro': [-20.5386, -47.4008],
-    'Cidade Nova': [-20.5350, -47.4120],
-    'Estação': [-20.5320, -47.4080],
-    'São Joaquim': [-20.5430, -47.4200],
-    'Jardim Dermínio': [-20.5510, -47.4260],
-    'Jardim Aeroporto': [-20.5650, -47.3850],
-    'Parque Vicente Leporace': [-20.5080, -47.4120],
-    'Jardim Brasilândia': [-20.5300, -47.3750],
-    'Jardim Ângela Rosa': [-20.5250, -47.3800],
-    'Parque das Esmeraldas': [-20.5550, -47.4300],
-    'Vila Santa Cruz': [-20.5500, -47.4150],
-    'Jardim Vera Cruz': [-20.5150, -47.3950],
-    'Jardim Portinari': [-20.4980, -47.3850],
-    'Recanto Elimar': [-20.5600, -47.3980],
-    'Vila Rezende': [-20.5480, -47.4050],
-    'Bairro Higienópolis': [-20.5420, -47.3920],
-    'Jardim Paulistano': [-20.5400, -47.3700],
-    'Parque Progresso': [-20.5520, -47.3850],
-    'Vila Chico Júlio': [-20.5260, -47.4100],
-    'Jardim Piratininga': [-20.5350, -47.3880],
-    'Vila Aparecida': [-20.5300, -47.3920],
-    'Vila São Sebastião': [-20.5420, -47.4150],
-    'Jardim Planalto': [-20.5220, -47.3810],
-    'Jardim Dr. Antonio Petraglia': [-20.5460, -47.3790],
-    'Jardim Integração': [-20.5510, -47.3810],
-    'Parque Franville': [-20.5540, -47.3820],
-    'Jardim Noêmia': [-20.5440, -47.3850],
-    'Jardim Seminário': [-20.5310, -47.3950],
-    'Miramontes': [-20.4950, -47.4050],
-    'Jardim Palma': [-20.5150, -47.3720],
-    'Jardim Alvorada': [-20.5220, -47.4080],
-    'Vila Imperador': [-20.5260, -47.4080],
-    'Jardim Guanabara': [-20.5290, -47.3810],
-    'Vila Hípica': [-20.5500, -47.3980],
-    'Jardim Paraty': [-20.5560, -47.3750],
-    'Parque Universitário': [-20.5580, -47.3720],
-    'Vila Industrial': [-20.5700, -47.4100],
-    'Vila Raycos': [-20.5390, -47.4150],
-    'Jardim Panorama': [-20.5280, -47.3880],
-    'Jardim América': [-20.5360, -47.4090],
-    'Jardim Palestina': [-20.5280, -47.4180],
-    'Residencial Zanetti': [-20.5200, -47.3650],
-    'Jardim Brasil': [-20.5310, -47.4220],
-    'Jardim Luiza': [-20.5050, -47.4020],
-    'Jardim Santa Lúcia': [-20.5480, -47.3980]
-  };
+  const COORDENADAS_FRANCA = {{ coordenadas_oficiais|tojson }};
 
   const grupo = L.layerGroup().addTo(m);
   const dados = {{ mapa|tojson }};
@@ -343,11 +297,7 @@ document.addEventListener("DOMContentLoaded", function() {
     // 1. Prioridade total para as coordenadas salvas no banco de dados
     let coords = null;
     if (b.latitude != null && b.longitude != null) {
-      let lat = Number(b.latitude);
-      let lon = Number(b.longitude);
-      if (lat >= -20.64 && lat <= -20.45 && lon >= -47.48 && lon <= -47.31) {
-        coords = [lat, lon];
-      }
+      coords = [Number(b.latitude), Number(b.longitude)];
     }
 
     // 2. Se não houver coordenada salva no banco, usa o padrão inicial
@@ -403,7 +353,7 @@ document.addEventListener("DOMContentLoaded", function() {
       try {
         await fetch('/api/bairro/' + b.id + '/coordenadas', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token() }}' },
           body: JSON.stringify({ latitude: pos.lat, longitude: pos.lng })
         });
       } catch (err) {
