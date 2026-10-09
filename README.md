@@ -178,8 +178,6 @@ projeto_dengue/
 └── tests/
 ```
 
-Não envie `venv/` nem `.secret_key`. O `.gitignore` já ignora os dois.
-
 ## Limitações
 
 - O mapa usa marcadores e o perímetro do município. Não desenha o polígono oficial de cada bairro.
