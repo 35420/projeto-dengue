@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import unittest
 
-from assistente_temas import resposta_tema_dengue, sintomas_citados
+from assistente_temas import pergunta_educativa, resposta_tema_dengue, sintomas_citados
 
 
 class AssistenteTemasTest(unittest.TestCase):
@@ -41,3 +41,15 @@ class AssistenteTemasTest(unittest.TestCase):
     def test_risco_e_chuva_ficam_com_o_painel(self):
         self.assertIsNone(resposta_tema_dengue("Qual é o risco do bairro selecionado?"))
         self.assertIsNone(resposta_tema_dengue("Qual a probabilidade de chuva no Jardim Brasil?"))
+        self.assertFalse(pergunta_educativa("Qual é o risco do bairro selecionado?"))
+
+    def test_marcas_no_corpo_falam_de_pele_e_nao_de_risco(self):
+        texto, fonte = resposta_tema_dengue("quais as marcas que a dengue deixa no corpo?")
+        self.assertIsNotNone(texto)
+        self.assertIn("mancha", texto.lower())
+        self.assertIn("pele", texto.lower())
+        self.assertIn("não é um diagnóstico", texto.lower())
+        self.assertNotIn("classificação", texto.lower())
+        self.assertNotIn("pontos", texto.lower())
+        self.assertIn("orientação", fonte)
+        self.assertTrue(pergunta_educativa("quais as marcas que a dengue deixa no corpo?"))

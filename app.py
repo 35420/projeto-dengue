@@ -17,14 +17,14 @@ import time
 import unicodedata
 import zipfile
 from collections import defaultdict, deque
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import pandas as pd
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, session, url_for
 
-from assistente_temas import resposta_tema_dengue
+from assistente_temas import pergunta_educativa, resposta_tema_dengue
 from integridade import (
     chaves_nome_bairro as _chaves_nome_bairro,
     consumir_janela,
@@ -52,6 +52,7 @@ from modelo import (
     construir_dataset_temporal,
     montar_entrada,
     periodo_ordem as _periodo_ordem,
+    probabilidade_aumento_recente,
     texto_baselines,
 )
 
@@ -778,22 +779,151 @@ def atualizar_dados_oficiais_franca(force=False):
         return {"ok": False, "atualizado": False, "mensagem": "Não foi possível consultar a fonte automática. O último dado salvo foi preservado."}
 
 
+_MESES_PT = (
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+)
+
+
+def instante_inicio_semana(valor):
+    """Data da semana em UTC. Aceita AAAA-MM-DD ou epoch em segundos/milissegundos."""
+    if valor in (None, ""):
+        return None
+    texto = str(valor).strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", texto)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if not re.fullmatch(r"\d+", texto):
+        return None
+    n = int(texto)
+    segundos = n / 1000.0 if n >= 10_000_000_000 else float(n)
+    try:
+        return datetime.fromtimestamp(segundos, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _ano_data_inicio_semana(valor):
+    instante = instante_inicio_semana(valor)
+    if instante is None:
+        return None
+    ano = instante.year
+    return ano if 1900 <= ano <= 2200 else None
+
+
+def ordenar_oficial(linhas, recente_primeiro=False):
+    registros = [dict(linha) for linha in linhas]
+
+    def chave(registro):
+        instante = instante_inicio_semana(registro.get("data_inicio_semana"))
+        marca = instante.timestamp() if instante is not None else float("-inf")
+        return (marca, registro.get("id") or 0)
+
+    registros.sort(key=chave, reverse=recente_primeiro)
+    return registros
+
+
+def agregar_meses_oficiais(linhas):
+    """Soma casos_semana pelo mês civil em que a semana epidemiológica começa."""
+    grupos = {}
+    for bruto in linhas:
+        registro = dict(bruto)
+        instante = instante_inicio_semana(registro.get("data_inicio_semana"))
+        if instante is None:
+            continue
+        chave = (instante.year, instante.month)
+        grupo = grupos.setdefault(chave, {"ano": instante.year, "mes": instante.month, "casos": 0, "semanas": 0})
+        try:
+            grupo["casos"] += int(registro.get("casos_semana") or 0)
+        except (TypeError, ValueError):
+            pass
+        grupo["semanas"] += 1
+    meses = []
+    for chave in sorted(grupos):
+        grupo = grupos[chave]
+        semanas = grupo["semanas"] or 1
+        grupo["rotulo"] = f"{_MESES_PT[grupo['mes'] - 1]} de {grupo['ano']}"
+        grupo["media"] = round(grupo["casos"] / semanas, 1)
+        meses.append(grupo)
+    return meses
+
+
+def _partes_semana_epidemiologica(semana, data_inicio=None):
+    """InfoDengue SE YYYYWW (202634 = 2026, semana 34). 1–53 usa o ano de data_inicio_semana."""
+    try:
+        se = int(semana)
+    except (TypeError, ValueError):
+        return None, None
+    if 1 <= se <= 53:
+        return _ano_data_inicio_semana(data_inicio), se
+    ano, numero = divmod(se, 100)
+    if 1900 <= ano <= 2200 and 1 <= numero <= 53:
+        return ano, numero
+    return None, None
+
+
+def rotulo_semana_epidemiologica(semana, data_inicio=None):
+    ano, numero = _partes_semana_epidemiologica(semana, data_inicio)
+    if numero is None:
+        if semana in (None, ""):
+            return "—"
+        return str(semana)
+    if ano:
+        return f"{ano} · semana {numero}"
+    return f"semana {numero}"
+
+
+def preparar_serie_oficial(linhas):
+    """Rótulo legível da semana e soma corrida de casos_semana dentro de cada ano."""
+    registros = [dict(linha) for linha in linhas]
+    partes = [
+        _partes_semana_epidemiologica(r.get("semana_epidemiologica"), r.get("data_inicio_semana"))
+        for r in registros
+    ]
+    for r in registros:
+        r["semana_rotulo"] = rotulo_semana_epidemiologica(
+            r.get("semana_epidemiologica"), r.get("data_inicio_semana")
+        )
+    indices = sorted(
+        range(len(registros)),
+        key=lambda i: (
+            partes[i][0] if partes[i][0] is not None else 9999,
+            partes[i][1] if partes[i][1] is not None else 99,
+            str(registros[i].get("data_inicio_semana") or ""),
+            registros[i].get("id") or 0,
+        ),
+    )
+    totais = {}
+    for i in indices:
+        ano = partes[i][0]
+        try:
+            casos = int(registros[i].get("casos_semana") or 0)
+        except (TypeError, ValueError):
+            casos = 0
+        totais[ano] = totais.get(ano, 0) + casos
+        registros[i]["acumulado_ate_semana"] = totais[ano]
+    return registros
+
+
 def resumo_oficial_franca(conn):
-    ultimo = conn.execute(
-        "SELECT * FROM dados_oficiais_franca ORDER BY date(data_inicio_semana) DESC, id DESC LIMIT 1"
-    ).fetchone()
-    serie = conn.execute("""
-        SELECT data_inicio_semana, semana_epidemiologica, casos_semana, casos_acumulados,
-               incidencia_100k, nivel_alerta, rt, prob_rt_maior_1
-        FROM dados_oficiais_franca
-        ORDER BY date(data_inicio_semana)
-    """).fetchall()
+    bruto = conn.execute("SELECT * FROM dados_oficiais_franca").fetchall()
+    serie = ordenar_oficial(bruto, recente_primeiro=False)
     atualizacao = conn.execute(
         "SELECT * FROM atualizacoes_fontes ORDER BY id DESC LIMIT 1"
     ).fetchone()
+    ultimo_d = dict(serie[-1]) if serie else None
+    if ultimo_d is not None:
+        ultimo_d["semana_rotulo"] = rotulo_semana_epidemiologica(
+            ultimo_d.get("semana_epidemiologica"), ultimo_d.get("data_inicio_semana")
+        )
+    meses = agregar_meses_oficiais(serie)
     return {
-        "ultimo": dict(ultimo) if ultimo else None,
-        "serie": [dict(r) for r in serie],
+        "ultimo": ultimo_d,
+        "mes": meses[-1] if meses else None,
+        "serie": serie,
         "atualizacao": dict(atualizacao) if atualizacao else None,
         "fonte_url": "https://info.dengue.mat.br/",
     }
@@ -1025,16 +1155,11 @@ def detectar_bairro_pergunta(conn, pergunta):
             return dict(b)
     return None
 
-def previsao_clima_bairro(bairro_id, dias=7):
-    conn = get_db()
-    local = _bairro_localizacao(conn, bairro_id)
-    if not local:
-        return {"ok": False, "mensagem": "Bairro não encontrado."}
-
+def _previsao_open_meteo(latitude, longitude, dias, lugar):
     dias = max(1, min(int(dias or 7), 10))
     params = {
-        "latitude": local["latitude"],
-        "longitude": local["longitude"],
+        "latitude": latitude,
+        "longitude": longitude,
         "daily": ",".join([
             "precipitation_probability_max", "precipitation_probability_mean",
             "precipitation_sum", "rain_sum", "temperature_2m_max",
@@ -1076,14 +1201,38 @@ def previsao_clima_bairro(bairro_id, dias=7):
         return {
             "ok": True,
             "fonte": "Open-Meteo / previsão meteorológica",
-            "bairro": local,
+            "bairro": lugar,
             "dias": dias_saida,
             "maior_probabilidade": maior,
             "chuva_acumulada_prevista_mm": round(acumulado, 1),
             "atualizado_em": datetime.now().isoformat(timespec="seconds"),
         }
     except Exception as exc:
-        return {"ok": False, "mensagem": f"Não foi possível obter a previsão do clima agora: {str(exc)[:180]}"}
+        return {
+            "ok": False,
+            "falha_consulta": True,
+            "mensagem": f"Não foi possível obter a previsão do clima agora: {str(exc)[:180]}",
+        }
+
+
+def previsao_clima_municipio(dias=7):
+    lugar = {
+        "id": None,
+        "nome": "Franca",
+        "latitude": FRANCA_LAT,
+        "longitude": FRANCA_LON,
+        "precisao": "município de Franca",
+        "escopo": "municipio",
+    }
+    return _previsao_open_meteo(FRANCA_LAT, FRANCA_LON, dias, lugar)
+
+
+def previsao_clima_bairro(bairro_id, dias=7):
+    conn = get_db()
+    local = _bairro_localizacao(conn, bairro_id)
+    if not local:
+        return {"ok": False, "mensagem": "Bairro não encontrado."}
+    return _previsao_open_meteo(local["latitude"], local["longitude"], dias, local)
 
 def contexto_assistente(pergunta, bairro_id=None):
     conn = get_db()
@@ -1099,7 +1248,7 @@ def contexto_assistente(pergunta, bairro_id=None):
     oficial = resumo_oficial_franca(conn)
     clima_municipal = conn.execute("SELECT * FROM dados_ambientais_franca ORDER BY date(periodo) DESC, id DESC LIMIT 1").fetchone()
     dados_bairro = next((b for b in resumo if bairro_id_final and b["id"] == bairro_id_final), None)
-    previsao = previsao_clima_bairro(bairro_id_final, 7) if bairro_id_final else None
+    previsao = previsao_clima_bairro(bairro_id_final, 7) if bairro_id_final else previsao_clima_municipio(7)
 
     return {
         "pergunta": pergunta,
@@ -1122,20 +1271,53 @@ def resposta_assistente_local(pergunta, contexto):
 
     if "incub" not in q and any(x in q for x in ["chuva", "chover", "precipitacao", "tempo", "clima"]):
         if not p or not p.get("ok"):
-            return "Não consegui consultar a previsão agora. Tente novamente em alguns instantes.", "previsão meteorológica"
-        maior = p["maior_probabilidade"]
+            if p and p.get("falha_consulta"):
+                return "Não consegui consultar a previsão agora. Tente novamente em alguns instantes.", "previsão meteorológica"
+            if nome:
+                return (
+                    "Previsão de chuva\n"
+                    f"Não encontrei a localização de {nome} para consultar o clima."
+                ), "base local"
+            return (
+                "Previsão de chuva\n"
+                "Nenhum bairro foi selecionado e a previsão municipal não foi consultada."
+            ), "base local"
+        maior = p.get("maior_probabilidade") or {}
+        if maior.get("probabilidade_max") is not None:
+            chance = f"{maior['probabilidade_max']:.0f}% em {maior['data']}"
+        elif maior.get("precipitacao_mm") is not None:
+            chance = f"{maior['precipitacao_mm']:.1f} mm em {maior['data']}"
+        else:
+            chance = "sem valor diário informado"
         linhas = []
         for d in p["dias"][:3]:
-            if d["probabilidade_max"] is not None:
-                linhas.append(f'{d["data"]}: {d["probabilidade_max"]:.0f}% de chance e {d["precipitacao_mm"]:.1f} mm')
-        titulo = nome or "o bairro selecionado"
+            prob = d.get("probabilidade_max")
+            mm = d.get("precipitacao_mm")
+            if prob is not None and mm is not None:
+                linhas.append(f'{d["data"]}: {prob:.0f}% de chance e {mm:.1f} mm')
+            elif prob is not None:
+                linhas.append(f'{d["data"]}: {prob:.0f}% de chance')
+            elif mm is not None:
+                linhas.append(f'{d["data"]}: {mm:.1f} mm')
+        bloco_dias = "\n".join(linhas) if linhas else "Sem detalhe diário."
+        if nome:
+            abertura = (
+                f"Previsão de chuva\n"
+                f"Para {nome}, a maior chance nos próximos {len(p['dias'])} dias é {chance}."
+            )
+        else:
+            abertura = (
+                "Previsão de chuva\n"
+                "Nenhum bairro foi selecionado. A previsão é do município de Franca.\n"
+                "Escolha um bairro para ver a previsão local.\n\n"
+                f"Maior chance nos próximos {len(p['dias'])} dias\n"
+                f"{chance}."
+            )
         return (
-            f"Previsão de chuva\n"
-            f"Para {titulo}, a maior chance nos próximos {len(p['dias'])} dias é "
-            f"{maior['probabilidade_max']:.0f}% em {maior['data']}.\n\n"
+            f"{abertura}\n\n"
             f"Chuva acumulada prevista\n"
             f"{p['chuva_acumulada_prevista_mm']:.1f} mm.\n\n"
-            f"Próximos dias\n" + "\n".join(linhas)
+            f"Próximos dias\n{bloco_dias}"
         ), "Open-Meteo"
 
     if any(x in q for x in ["qual bairro", "quais bairros", "maior tendencia", "mais casos", "mais risco", "pior bairro", "ranking"]):
@@ -1157,7 +1339,7 @@ def resposta_assistente_local(pergunta, contexto):
     if tema:
         return tema
 
-    if any(x in q for x in ["proteger", "protecao", "prevencao", "casa", "quintal", "cuidado", "cuidados", "mosquito", "larvas"]):
+    if any(x in q for x in ["proteger", "protecao", "prevencao", "prevenir", "evitar", "casa", "quintal", "cuidado", "cuidados", "mosquito", "larvas"]):
         return (
             "O que mais reduz o mosquito\n"
             "Elimine água parada.\n\n"
@@ -1171,7 +1353,7 @@ def resposta_assistente_local(pergunta, contexto):
             "Faça uma vistoria semanal. Se o problema for na vizinhança, avise o serviço municipal."
         ), "orientação preventiva"
 
-    if any(x in q for x in ["risco", "casos", "dengue", "tendencia", "tendência", "previsao", "previsão"]):
+    if not pergunta_educativa(q) and any(x in q for x in ["risco", "casos", "tendencia", "previsao"]):
         if b:
             pontos_txt = f'{b["pontuacao"]:.1f} pontos' if b.get("pontuacao") is not None else "sem análise calculada"
             classificacao_txt = b.get("classificacao") or "Sem análise"
@@ -1400,6 +1582,62 @@ def preparar_entrada_temporal(conn, bairro_id, preenchimento=None):
     return montar_entrada(rows, carregar_ambiental(conn), preenchimento)
 
 
+def _media_casos_recentes(serie):
+    """Média dos últimos até 3 períodos observados; se não houver, dos períodos disponíveis."""
+    base = _serie_para_analise(serie)
+    if not base:
+        return None
+    valores = [max(0.0, _num(r["casos_dengue"])) for r in base[-3:]]
+    if not valores:
+        return None
+    return max(0.0, round(sum(valores) / len(valores), 1))
+
+
+def _chuva_mm_para_probabilidade(row, ambiental):
+    """Chuva do período. Origem de demonstração ou ausente cede lugar ao clima municipal."""
+    origem = str(row["chuva_origem"] or "").strip().lower()
+    sintetica = origem.startswith("demonstr") or origem in {"", "ausente"}
+    if sintetica:
+        municipal = ((ambiental or {}).get(row["periodo"]) or {}).get("chuva_mm")
+        if municipal is not None:
+            return max(0.0, _num(municipal))
+    if row["chuva_mm"] is None:
+        return None
+    return max(0.0, _num(row["chuva_mm"]))
+
+
+def _probabilidade_aumento_recente(serie, ambiental=None):
+    """Probabilidade 0–1 na mesma janela da média recente (até 3 períodos).
+
+    Com passos de casos: 0,6 * fração de altas + 0,4 * min(1, chuva média / 150).
+    Sem dois períodos para comparar, fica só o escore de chuva.
+    """
+    base = _serie_para_analise(serie)
+    janela = list(base[-3:])
+    vazio = {"probabilidade": None, "chuva_mm": None, "fracao_casos": None, "score_chuva": None}
+    if not janela:
+        return vazio
+
+    casos = [max(0.0, _num(r["casos_dengue"])) for r in janela]
+    fracao = None
+    if len(casos) >= 2:
+        passos = len(casos) - 1
+        subidas = sum(1 for anterior, seguinte in zip(casos, casos[1:]) if seguinte > anterior)
+        fracao = subidas / passos
+
+    chuvas = []
+    for row in janela:
+        chuva = _chuva_mm_para_probabilidade(row, ambiental)
+        if chuva is not None:
+            chuvas.append(chuva)
+    chuva_media = sum(chuvas) / len(chuvas) if chuvas else 0.0
+    return {
+        "probabilidade": probabilidade_aumento_recente(casos, chuva_media),
+        "chuva_mm": chuva_media,
+        "fracao_casos": fracao,
+    }
+
+
 def gerar_previsao(bairro_id, salvar=True):
     conn = get_db()
     bairro = conn.execute("SELECT * FROM bairros WHERE id=?", (bairro_id,)).fetchone()
@@ -1443,6 +1681,7 @@ def gerar_previsao(bairro_id, salvar=True):
     modelo = cache["modelo"]
     metodo = "formula_risco"
     previsao_casos = None
+    usou_media_recente = False
     limite_inferior = None
     limite_superior = None
     prob_aumento = None
@@ -1485,16 +1724,30 @@ def gerar_previsao(bairro_id, salvar=True):
         )
     else:
         pontuacao = risco_atual
+        previsao_casos = _media_casos_recentes(serie)
+        usou_media_recente = previsao_casos is not None
+        prob_aumento = _probabilidade_aumento_recente(serie, carregar_ambiental(conn))["probabilidade"]
+        texto_media = (
+            "A previsão do próximo período é a média recente dos casos deste bairro "
+            "(até 3 períodos), porque não há histórico observado suficiente para a Random Forest."
+        )
         if not observados:
             aviso = (
                 "Este bairro ainda não tem série observada. Registros de demonstração ficam de fora do modelo. "
-                "O número abaixo é só o indicador didático do último registro."
+                + texto_media
             )
         else:
             aviso = (
                 f"Histórico observado insuficiente para treinar a previsão de casos "
                 f"(necessário: {MINIMO_REGISTROS_MODELO} exemplos derivados). "
-                "O sistema mostra apenas o risco didático atual."
+                + texto_media
+            )
+        if usou_media_recente:
+            metodo = "media_recente"
+        if prob_aumento is not None:
+            aviso += (
+                " Esse percentual mistura a alta recente de casos com a chuva recente, "
+                "porque a água da chuva favorece o mosquito; não é uma probabilidade clínica."
             )
 
     classificacao, cor = classificar_risco(pontuacao)
@@ -1507,12 +1760,24 @@ def gerar_previsao(bairro_id, salvar=True):
     recomendacao = recomendacao_por_classificacao(classificacao, prob_aumento, incidencia)
 
     fatores_txt = " • ".join(f"{NOMES_FATORES.get(nome, nome)} ({peso * 100:.0f}%)" for nome, peso in fatores)
-    observacao = (
-        "O risco combina um indicador ponderado atual com a previsão de casos quando o histórico observado é suficiente. "
-        "O teste separa períodos inteiros e compara o modelo com repetir o período anterior e com a média móvel. "
-        "É avaliação acadêmica, não validação clínica. Clima e umidade são municipais, não medidos dentro do bairro."
-        + texto_baselines(cache.get("metrica"))
-    )
+    if usou_media_recente:
+        observacao = (
+            "A previsão do próximo período é a média recente dos casos deste bairro "
+            "(até 3 períodos), porque não há histórico observado suficiente para a Random Forest. "
+            "Clima e umidade são municipais, não medidos dentro do bairro."
+        )
+        if prob_aumento is not None:
+            observacao += (
+                " A probabilidade de aumento mistura as subidas recentes dos casos (60%) com a chuva recente (40%), "
+                "porque a água da chuva favorece o mosquito. Não é uma probabilidade clínica."
+            )
+    else:
+        observacao = (
+            "O risco combina um indicador ponderado atual com a previsão de casos quando o histórico observado é suficiente. "
+            "O teste separa períodos inteiros e compara o modelo com repetir o período anterior e com a média móvel. "
+            "É avaliação acadêmica, não validação clínica. Clima e umidade são municipais, não medidos dentro do bairro."
+            + texto_baselines(cache.get("metrica"))
+        )
 
     resultado = {
         "pontuacao": pontuacao,
@@ -2152,7 +2417,10 @@ def relatorios():
         SELECT p.*, b.nome bairro_nome FROM previsoes p
         JOIN bairros b ON b.id=p.bairro_id ORDER BY p.id DESC LIMIT 100
     """).fetchall()
-    oficial = conn.execute("SELECT * FROM dados_oficiais_franca ORDER BY date(data_inicio_semana) DESC").fetchall()
+    oficial = preparar_serie_oficial(ordenar_oficial(
+        conn.execute("SELECT * FROM dados_oficiais_franca").fetchall(),
+        recente_primeiro=True,
+    ))
     resumo = buscar_resumo_bairros(conn)
     atualizacoes = conn.execute("SELECT * FROM atualizacoes_fontes ORDER BY id DESC LIMIT 10").fetchall()
     return render_template("relatorios.html", dados=dados, previsoes=previsoes, oficial=oficial,
@@ -2188,7 +2456,7 @@ def exportar_csv(tipo):
         linhas = conn.execute("SELECT * FROM dados_ambientais_franca ORDER BY date(periodo)").fetchall()
         colunas = ["id", "periodo", "inicio_periodo", "fim_periodo", "chuva_mm", "temperatura_media", "temperatura_min", "temperatura_max", "horas_precipitacao", "vento_max_kmh", "umidade_media", "horas_sol", "fonte", "atualizado_em"]
     elif tipo == "oficial":
-        linhas = conn.execute("SELECT * FROM dados_oficiais_franca ORDER BY date(data_inicio_semana)").fetchall()
+        linhas = ordenar_oficial(conn.execute("SELECT * FROM dados_oficiais_franca").fetchall())
         colunas = ["id", "data_inicio_semana", "semana_epidemiologica", "casos_semana", "casos_estimados",
                    "casos_acumulados", "incidencia_100k", "nivel_alerta", "rt", "prob_rt_maior_1", "receptivo", "transmissao", "fonte", "atualizado_em"]
     elif tipo == "resumo":

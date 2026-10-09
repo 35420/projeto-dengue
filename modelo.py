@@ -14,6 +14,10 @@ PESO_CHUVA = 0.20
 PESO_TEMPERATURA = 0.15
 MINIMO_REGISTROS_MODELO = 20
 MIN_SAMPLES_LEAF = 3
+# Chuva de referência da pontuação de risco: acima disto o fator de chuva satura.
+CHUVA_REFERENCIA_MM = 150.0
+PESO_SUBIDA_PROB = 0.60
+PESO_CHUVA_PROB = 0.40
 
 FEATURES = [
     "casos_lag1",
@@ -56,23 +60,41 @@ def calcular_risco_formula(casos, chuva, temp, focos, focos_disponiveis=True, nu
     score_casos = min(100.0, (casos / 40.0) * 100)
     score_chuva = min(100.0, (chuva / 150.0) * 100)
     score_temp = max(0.0, 100 - abs(27 - temp) * 8)
+    bruto = (
+        score_casos * PESO_CASOS
+        + score_chuva * PESO_CHUVA
+        + score_temp * PESO_TEMPERATURA
+    )
     if focos_disponiveis:
         focos = max(0.0, _num(focos))
         score_focos = min(100.0, (focos / 25.0) * 100)
-        risco = (
-            score_casos * PESO_CASOS
-            + score_focos * PESO_FOCOS
-            + score_chuva * PESO_CHUVA
-            + score_temp * PESO_TEMPERATURA
-        )
-    else:
+        risco = bruto + score_focos * PESO_FOCOS
+    elif casos > 0:
         peso_disponivel = PESO_CASOS + PESO_CHUVA + PESO_TEMPERATURA
-        risco = (
-            score_casos * PESO_CASOS
-            + score_chuva * PESO_CHUVA
-            + score_temp * PESO_TEMPERATURA
-        ) / peso_disponivel
+        risco = bruto / peso_disponivel
+    else:
+        # Casos zerados e focos sem evidência observada: o clima municipal
+        # entra com o próprio peso e não herda a fatia dos focos ausentes.
+        risco = bruto
     return round(max(0.0, min(100.0, risco)), 1)
+
+
+def probabilidade_aumento_recente(casos, chuva_mm):
+    """Chance de os casos subirem no próximo período, entre 0 e 1.
+
+    60% vem da fração de subidas nos últimos passos (até 3 períodos).
+    40% vem da chuva recente: água parada favorece o mosquito.
+    Sem par de períodos, usa só a chuva.
+    """
+    serie = [float(v or 0) for v in (casos or [])][-3:]
+    chuva = float(chuva_mm or 0)
+    score_chuva = min(1.0, max(0.0, chuva) / CHUVA_REFERENCIA_MM)
+    if len(serie) < 2:
+        return round(score_chuva, 4)
+    subidas = sum(1 for anterior, atual in zip(serie, serie[1:]) if atual > anterior)
+    fracao = subidas / (len(serie) - 1)
+    valor = PESO_SUBIDA_PROB * fracao + PESO_CHUVA_PROB * score_chuva
+    return round(min(1.0, max(0.0, valor)), 4)
 
 
 def classificar_risco(pontuacao):

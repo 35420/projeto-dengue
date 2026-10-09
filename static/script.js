@@ -8,8 +8,8 @@ function formatarDataString(val) {
     if (s.length === 10) ts *= 1000;
     let d = new Date(ts);
     if (!isNaN(d.getTime())) {
-      let dia = String(d.getDate()).padStart(2, '0');
-      let mes = String(d.getMonth() + 1).padStart(2, '0');
+      let dia = String(d.getUTCDate()).padStart(2, '0');
+      let mes = String(d.getUTCMonth() + 1).padStart(2, '0');
       return dia + '/' + mes;
     }
   }

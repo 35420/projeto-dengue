@@ -16,16 +16,28 @@
 
 <section class="painel destaque-auto">
   <div class="painel-cabecalho">
-    <div><h2>Monitoramento automático</h2><small>Consulta semanal ao InfoDengue/Fiocruz, sem misturar a fonte externa com a base local de demonstração.</small></div>
+    <div><h2>Monitoramento da semana</h2><small>Casos notificados na última semana epidemiológica do InfoDengue/Fiocruz, separados da base local.</small></div>
     <span class="tag tag-azul">{{ oficial.atualizacao.status if oficial.atualizacao else 'pendente' }}</span>
   </div>
   <div class="auto-grid">
     <div><span>Fonte</span><strong>InfoDengue / Fiocruz</strong></div>
-    <div><span>Última semana</span><strong>{{ oficial.ultimo.semana_epidemiologica if oficial.ultimo else '—' }}</strong></div>
-    <div><span>Casos acumulados</span><strong>{{ oficial.ultimo.casos_acumulados if oficial.ultimo else '—' }}</strong></div>
-    <div><span>Incidência /100 mil</span><strong>{{ '%.2f'|format(oficial.ultimo.incidencia_100k) if oficial.ultimo else '—' }}</strong></div>
+    <div><span>Semana</span><strong>{{ oficial.ultimo.semana_rotulo if oficial.ultimo else '—' }}</strong></div>
+    <div><span>Casos da semana</span><strong>{{ oficial.ultimo.casos_semana if oficial.ultimo else '—' }}</strong></div>
+    <div><span>Incidência /100 mil</span><strong>{{ '%.2f'|format(oficial.ultimo.incidencia_100k) if oficial.ultimo and oficial.ultimo.incidencia_100k is not none else '—' }}</strong></div>
   </div>
-  <p class="nota">A fonte pode revisar semanas recentes. O sistema atualiza automaticamente a cada {{ 6 }} horas ou por atualização manual.</p>
+</section>
+
+<section class="painel destaque-auto">
+  <div class="painel-cabecalho">
+    <div><h2>Monitoramento do mês</h2><small>Soma dos casos das semanas epidemiológicas que começam neste mês.</small></div>
+  </div>
+  <div class="auto-grid">
+    <div><span>Fonte</span><strong>InfoDengue / Fiocruz</strong></div>
+    <div><span>Mês</span><strong>{{ oficial.mes.rotulo if oficial.mes else '—' }}</strong></div>
+    <div><span>Casos do mês</span><strong>{{ oficial.mes.casos if oficial.mes else '—' }}</strong></div>
+    <div><span>Média por semana</span><strong>{{ '%.1f'|format(oficial.mes.media) if oficial.mes else '—' }}</strong></div>
+  </div>
+  <p class="nota">A fonte pode revisar semanas recentes. O sistema atualiza automaticamente a cada 6 horas ou por atualização manual. O mês junta só as semanas cuja data de início cai nele.</p>
 </section>
 
 <section class="painel filtro-painel">
@@ -47,7 +59,7 @@
 </section>
 
 <section class="kpi-strip">
-  <div><span>Casos oficiais acumulados</span><strong>{{ oficial.ultimo.casos_acumulados if oficial.ultimo else '—' }}</strong></div>
+  <div><span>Acumulado no ano (fonte)</span><strong>{{ oficial.ultimo.casos_acumulados if oficial.ultimo else '—' }}</strong></div>
   <div><span>Alerta municipal da fonte</span><strong>{% if oficial.ultimo %}{{ {1:'Verde',2:'Amarelo',3:'Laranja',4:'Vermelho'}.get(oficial.ultimo.nivel_alerta,'—') }}{% else %}—{% endif %}</strong></div>
   <div><span>Chuva do último mês</span><strong>{{ '%.1f'|format(clima_ultimo.chuva_mm) if clima_ultimo else '—' }} mm</strong></div>
   <div><span>Temperatura automática</span><strong>{{ '%.1f'|format(clima_ultimo.temperatura_media) if clima_ultimo and clima_ultimo.temperatura_media is not none else '—' }} °C</strong></div>
@@ -86,7 +98,7 @@
         <strong>{{ '%.1f'|format(b.pontuacao) if b.pontuacao is not none else '—' }} pts</strong>
         <span class="selo selo-{{ b.cor }}">{{ b.classificacao }}</span>
         {% if b.previsao_casos is not none %}
-          <small class="texto-suave">→ {{ '%.1f'|format(b.previsao_casos) }} casos</small>
+          <small class="texto-suave">→ {{ '%.1f'|format(b.previsao_casos) }} casos{% if b.probabilidade_aumento is not none %} • {{ '%.1f'|format(b.probabilidade_aumento) }}% de aumento{% endif %}</small>
         {% endif %}
       </div>
     </div>

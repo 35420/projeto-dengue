@@ -193,6 +193,22 @@ def _resposta_quando_procurar():
     ), "orientação geral sobre dengue"
 
 
+def _resposta_manchas():
+    return (
+        "Manchas no corpo\n"
+        "A dengue pode deixar manchas na pele. Em geral são avermelhadas e surgem no tronco, "
+        "no rosto, nos braços ou nas pernas, com a febre ou quando ela começa a baixar.\n\n"
+        "Quanto tempo ficam\n"
+        "Costumam sumir em alguns dias, sem deixar cicatriz.\n\n"
+        "Limite\n"
+        "Manchas também aparecem em outras doenças.\n\n"
+        "Quando procurar atendimento\n"
+        "Procure um serviço de saúde se as manchas vierem com febre ou mal-estar forte, "
+        "ou se houver vômito persistente, dor abdominal intensa, sangramento ou sonolência.\n\n"
+        f"{AVISO_NAO_DIAGNOSTICO}"
+    ), "orientação geral sobre dengue"
+
+
 def _resposta_cuidado_em_casa():
     return (
         "Enquanto aguarda avaliação\n"
@@ -213,6 +229,48 @@ def _pergunta_pessoal(q):
     ))
 
 
+def _contem_termo(q, termo):
+    return f" {termo} " in f" {q} "
+
+
+def _pergunta_manchas(q):
+    termos = ("manchas", "mancha", "marcas", "marca", "exantema", "erupcao", "coceira", "rash", "pele")
+    if any(_contem_termo(q, termo) for termo in termos):
+        return True
+    return "corpo" in q and any(x in q for x in ("deixa", "deixam", "aparece", "aparecem", "surg", "fica", "ficam"))
+
+
+def _pergunta_educativa(q):
+    if any(x in q for x in ("sintoma", "gripe", "resfriado", "incub", "sinal de alerta", "sinais de alerta")):
+        return True
+    if _pergunta_manchas(q):
+        return True
+    if any(x in q for x in (
+        "transmiss", "transmit", "como pega", "como transmite", "aedes", "como se pega", "mosquito",
+    )):
+        return True
+    if any(x in q for x in (
+        "procurar", "pronto socorro", "pronto-socorro", "unidade de saude", "quando ir", "medico", "upa", "hospital",
+    )):
+        return True
+    if any(x in q for x in ("prevenc", "prevenir", "evitar", "proteger", "agua parada", "larva", "quintal")):
+        return True
+    if any(x in q for x in (
+        "aspirina", "ibuprofeno", "aas", "dipirona", "remedio", "medicamento", "hidrat", "repouso", "o que tomar",
+    )):
+        return True
+    if any(x in q for x in (
+        "o que e dengue", "o que e a dengue", "pode ser dengue", "sera dengue", "tenho dengue", "estou com dengue",
+    )):
+        return True
+    return False
+
+
+def pergunta_educativa(texto):
+    """Sintoma, manchas, transmissão, mosquito, incubação, atendimento ou prevenção."""
+    return _pergunta_educativa(normalizar_texto_pergunta(texto))
+
+
 def _consulta_de_bairro(q, citados):
     if citados and _pergunta_pessoal(q):
         return False
@@ -230,7 +288,9 @@ def resposta_tema_dengue(texto):
         return None
 
     citados = sintomas_citados(q)
-    if _consulta_de_bairro(q, citados) and not any(x in q for x in ("sintoma", "gripe", "resfriado", "incub")):
+    if _pergunta_manchas(q) and not _pergunta_pessoal(q) and "mosquito" not in q and "aedes" not in q:
+        return _resposta_manchas()
+    if _consulta_de_bairro(q, citados) and not _pergunta_educativa(q):
         return None
 
     if citados and (_pergunta_pessoal(q) or "sintoma" not in q):

@@ -364,6 +364,7 @@ document.addEventListener("DOMContentLoaded", function() {
     const risco = b.pontuacao == null ? 'Sem análise' : Number(b.pontuacao).toFixed(1) + ' pts • ' + b.classificacao;
     const incidencia = b.incidencia_1000 == null ? '—' : Number(b.incidencia_1000).toFixed(2);
     const prev = b.previsao_casos == null ? '—' : Number(b.previsao_casos).toFixed(1);
+    const prob = b.probabilidade_aumento == null ? '—' : Number(b.probabilidade_aumento).toFixed(1) + '%';
 
     mk.bindPopup(
       '<div class="popup-bairro">' +
@@ -374,6 +375,7 @@ document.addEventListener("DOMContentLoaded", function() {
           '<div class="popup-item"><span>População</span><strong>' + (b.populacao || '—') + '</strong></div>' +
           '<div class="popup-item"><span>Incidência/1.000</span><strong>' + incidencia + '</strong></div>' +
           '<div class="popup-item"><span>Previsão Próx. Período</span><strong>' + prev + '</strong></div>' +
+          '<div class="popup-item"><span>Prob. aumento</span><strong>' + prob + '</strong></div>' +
         '</div>' +
         '<div class="popup-acoes">' +
           '<a href="/bairro/' + b.id + '">Ver detalhes do bairro →</a>' +

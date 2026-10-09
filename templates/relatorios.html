@@ -108,14 +108,14 @@
   <div class="tabela-scroll">
     <table class="tabela tabela-compacta">
       <thead>
-        <tr><th>Semana</th><th>Casos</th><th>Acumulados</th><th>Incidência/100 mil</th><th>Alerta</th><th>Rt</th></tr>
+        <tr><th>Semana</th><th>Casos</th><th>Acumulado até a semana</th><th>Incidência/100 mil</th><th>Alerta</th><th>Rt</th></tr>
       </thead>
       <tbody>
         {% for d in oficial[:24] %}
         <tr>
-          <td>{{ d.semana_epidemiologica or '—' }}</td>
+          <td>{{ d.semana_rotulo or '—' }}</td>
           <td>{{ d.casos_semana }}</td>
-          <td>{{ d.casos_acumulados }}</td>
+          <td>{{ d.acumulado_ate_semana }}</td>
           <td>{{ '%.2f'|format(d.incidencia_100k or 0) }}</td>
           <td>{{ {1:'Verde',2:'Amarelo',3:'Laranja',4:'Vermelho'}.get(d.nivel_alerta,'—') }}</td>
           <td>{{ '%.2f'|format(d.rt) if d.rt is not none else '—' }}</td>
